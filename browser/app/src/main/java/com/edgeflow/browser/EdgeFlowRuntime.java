@@ -60,9 +60,7 @@ final class EdgeFlowRuntime {
                 .debugLogging(false)
                 .build();
 
-        // Aegis runtime tuning. All of these switches are Gecko-level features,
-        // not page JavaScript hacks. They keep resource prioritisation and GC
-        // modern while preserving the compatibility-first policy used by Atlas.
+        // Aegis runtime tuning: browser-engine features rather than page hacks.
         settings.setWebContentIsolationStrategy(GeckoRuntimeSettings.STRATEGY_ISOLATE_HIGH_VALUE);
         settings.setParallelMarkingEnabled(true);
         settings.setFetchPriorityEnabled(true);
@@ -70,7 +68,9 @@ final class EdgeFlowRuntime {
         settings.setCookieBehaviorOptInPartitioningPBM(true);
         settings.setFingerprintingProtectionPrivateBrowsing(true);
 
-        runtime = GeckoRuntime.create(context.getApplicationContext(), settings);
+        Context app = context.getApplicationContext();
+        runtime = GeckoRuntime.create(app, settings);
+        runtime.setWebNotificationDelegate(new WebNotificationController(app));
         runtime.warmUp();
         ensureCoreInstalled(runtime);
         return runtime;
