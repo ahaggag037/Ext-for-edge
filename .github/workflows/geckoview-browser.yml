@@ -5,6 +5,7 @@ on:
     branches:
       - browser/geckoview-genesis
       - browser/v0.2-hyperion
+      - browser/v0.3-atlas
     paths:
       - 'browser/**'
       - '.github/workflows/geckoview-browser.yml'
@@ -79,7 +80,7 @@ jobs:
       - name: Upload browser APK
         uses: actions/upload-artifact@v4
         with:
-          name: EdgeFlow-Browser-Hyperion-ARM64
+          name: EdgeFlow-Browser-Atlas-ARM64
           path: browser/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
