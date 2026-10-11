@@ -36,7 +36,7 @@ jobs:
             node --check browser/app/src/main/assets/edgeflow/global_optimizer.js
           fi
           python3 - <<'PY'
-          import json, re
+          import json
           from pathlib import Path
 
           manifest = json.loads(Path('browser/app/src/main/assets/edgeflow/manifest.json').read_text())
@@ -50,8 +50,13 @@ jobs:
           if 'browser/v0.4-aegis' in '${{ github.ref }}':
               assert '.AegisActivity' in android_manifest
               assert "versionName '0.4.0-aegis'" in gradle
+              chatgpt_js = Path('browser/app/src/main/assets/edgeflow/chatgpt.js').read_text()
               global_js = Path('browser/app/src/main/assets/edgeflow/global_optimizer.js').read_text()
               assert "host === 'chatgpt.com'" in global_js
+              # The performance engine must never rewrite ChatGPT transport/history payloads.
+              forbidden = ['current_node', 'json.mapping', 'window.fetch =', 'XMLHttpRequest.prototype', 'WebSocket.prototype']
+              for needle in forbidden:
+                  assert needle not in chatgpt_js, f'forbidden ChatGPT hook: {needle}'
               required = [
                   'BrowserDataStore.java', 'SiteDataController.java', 'WebNotificationController.java',
                   'PerformanceGuardian.java', 'AegisActivity.java'
@@ -98,11 +103,19 @@ jobs:
           APK=$(find browser/app/build/outputs/apk/debug -name '*.apk' -type f | head -n1)
           test -n "$APK"
           test -s "$APK"
+          SIZE=$(stat -c%s "$APK")
+          # Guard against accidentally shipping a 500MB universal APK to a limited-data phone.
+          test "$SIZE" -lt 230000000
           unzip -t "$APK"
           unzip -l "$APK" | grep -q 'assets/edgeflow/manifest.json'
           unzip -l "$APK" | grep -q 'assets/edgeflow/chatgpt.js'
           if [ -f browser/app/src/main/assets/edgeflow/global_optimizer.js ]; then
             unzip -l "$APK" | grep -q 'assets/edgeflow/global_optimizer.js'
+          fi
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/'
+          if unzip -l "$APK" | grep -qE 'lib/(x86|x86_64|armeabi-v7a)/'; then
+            echo 'Unexpected non-ARM64 native libraries in mobile APK' >&2
+            exit 1
           fi
           sha256sum "$APK"
 
