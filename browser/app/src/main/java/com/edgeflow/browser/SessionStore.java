@@ -7,12 +7,15 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 final class SessionStore {
     private static final String PREFS = "edgeflow_browser_state_v2";
     private static final String KEY_TABS = "tabs";
     private static final String KEY_SELECTED = "selected";
     private static final int MAX_PERSISTED_TABS = 12;
+    private static final ExecutorService IO = Executors.newSingleThreadExecutor();
 
     static final class Snapshot {
         final List<BrowserTab> tabs;
@@ -43,16 +46,22 @@ final class SessionStore {
             } catch (Exception ignored) {}
         }
 
-        String encrypted = SecureStateCodec.encrypt(array.toString());
-        if (encrypted.isEmpty() && array.length() > 0) {
-            // Fail closed: never persist potentially sensitive Gecko session state as plaintext.
-            return;
-        }
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit()
-                .putString(KEY_TABS, encrypted)
-                .putInt(KEY_SELECTED, persistedSelected)
-                .apply();
+        final String plaintextSnapshot = array.toString();
+        final int selectedSnapshot = persistedSelected;
+        final int tabCount = array.length();
+        final Context app = context.getApplicationContext();
+        IO.execute(() -> {
+            String encrypted = SecureStateCodec.encrypt(plaintextSnapshot);
+            if (encrypted.isEmpty() && tabCount > 0) {
+                // Fail closed: never persist potentially sensitive Gecko session state as plaintext.
+                return;
+            }
+            app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_TABS, encrypted)
+                    .putInt(KEY_SELECTED, selectedSnapshot)
+                    .commit();
+        });
     }
 
     static Snapshot load(Context context) {
