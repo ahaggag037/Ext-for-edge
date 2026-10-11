@@ -11,10 +11,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class SessionStore {
-    private static final String PREFS = "edgeflow_browser_state_v2";
+    private static final String PREFS = "edgeflow_browser_state_v3";
     private static final String KEY_TABS = "tabs";
     private static final String KEY_SELECTED = "selected";
-    private static final int MAX_PERSISTED_TABS = 12;
+    private static final int MAX_PERSISTED_TABS = 16;
     private static final ExecutorService IO = Executors.newSingleThreadExecutor();
 
     static final class Snapshot {
@@ -39,6 +39,7 @@ final class SessionStore {
                 o.put("title", tab.title == null ? "" : tab.title);
                 o.put("url", tab.url == null ? "about:blank" : tab.url);
                 o.put("desktop", tab.desktopMode);
+                o.put("compat", tab.compatibilityMode);
                 o.put("state", tab.sessionState == null ? "" : tab.sessionState);
                 array.put(o);
                 if (i == selectedIndex) persistedSelected = persistedIndex;
@@ -52,10 +53,7 @@ final class SessionStore {
         final Context app = context.getApplicationContext();
         IO.execute(() -> {
             String encrypted = SecureStateCodec.encrypt(plaintextSnapshot);
-            if (encrypted.isEmpty() && tabCount > 0) {
-                // Fail closed: never persist potentially sensitive Gecko session state as plaintext.
-                return;
-            }
+            if (encrypted.isEmpty() && tabCount > 0) return;
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                     .edit()
                     .putString(KEY_TABS, encrypted)
@@ -80,6 +78,9 @@ final class SessionStore {
                         o.optBoolean("desktop", false),
                         o.optString("title", "Restored tab"),
                         o.optString("url", "https://chatgpt.com/"));
+                tab.compatibilityMode = o.has("compat")
+                        ? o.optBoolean("compat", SitePolicy.shouldDefaultCompatibility(tab.url))
+                        : SitePolicy.shouldDefaultCompatibility(tab.url);
                 String state = o.optString("state", "");
                 tab.sessionState = state.isEmpty() ? null : state;
                 tab.hibernated = true;
