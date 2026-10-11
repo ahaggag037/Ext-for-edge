@@ -6,6 +6,7 @@ on:
       - browser/geckoview-genesis
       - browser/v0.2-hyperion
       - browser/v0.3-atlas
+      - browser/v0.4-aegis
     paths:
       - 'browser/**'
       - '.github/workflows/geckoview-browser.yml'
@@ -27,6 +28,9 @@ jobs:
         run: |
           set -euo pipefail
           node --check browser/app/src/main/assets/edgeflow/chatgpt.js
+          if [ -f browser/app/src/main/assets/edgeflow/global_optimizer.js ]; then
+            node --check browser/app/src/main/assets/edgeflow/global_optimizer.js
+          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -34,7 +38,8 @@ jobs:
           data = json.loads(p.read_text())
           assert data['browser_specific_settings']['gecko']['id'] == 'edgeflow-core@edgeflow.local'
           assert 'nativeMessagingFromContent' in data.get('permissions', [])
-          assert 'https://chatgpt.com/*' in data['content_scripts'][0]['matches']
+          matches = [m for script in data.get('content_scripts', []) for m in script.get('matches', [])]
+          assert 'https://chatgpt.com/*' in matches
           print('EdgeFlow Core manifest/static checks: PASS')
           PY
 
@@ -80,7 +85,7 @@ jobs:
       - name: Upload browser APK
         uses: actions/upload-artifact@v4
         with:
-          name: EdgeFlow-Browser-Atlas-ARM64
+          name: EdgeFlow-Browser-${{ github.ref_name == 'browser/v0.4-aegis' && 'Aegis-DEV-ARM64' || github.ref_name }}
           path: browser/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
