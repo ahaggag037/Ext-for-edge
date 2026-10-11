@@ -1,6 +1,5 @@
 package com.edgeflow.browser;
 
-import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
@@ -10,7 +9,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -34,6 +32,7 @@ import org.mozilla.geckoview.GeckoRuntime;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
+import org.mozilla.geckoview.WebResponse;
 
 public final class BrowserActivity extends Activity implements PerformanceGuardian.Listener {
     private static final String HOME = "https://chatgpt.com/";
@@ -42,6 +41,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
     private final ArrayList<BrowserTab> tabs = new ArrayList<>();
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable persistRunnable = this::persistStateNow;
     private GeckoRuntime runtime;
     private GeckoView geckoView;
     private LinearLayout toolbar;
@@ -87,7 +87,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
     @Override
     protected void onStop() {
-        persistState();
+        persistStateNow();
         if (guardian != null) guardian.stop();
         super.onStop();
     }
@@ -292,6 +292,10 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
             @Override public void onFullScreen(GeckoSession s, boolean fullScreen) {
                 setBrowserFullscreen(fullScreen);
+            }
+
+            @Override public void onExternalResponse(GeckoSession s, WebResponse response) {
+                DownloadController.handle(BrowserActivity.this, response);
             }
         });
 
@@ -748,6 +752,12 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
     }
 
     private void persistState() {
+        main.removeCallbacks(persistRunnable);
+        main.postDelayed(persistRunnable, 700L);
+    }
+
+    private void persistStateNow() {
+        main.removeCallbacks(persistRunnable);
         if (!tabs.isEmpty()) SessionStore.save(this, tabs, Math.max(0, currentIndex));
     }
 
@@ -781,7 +791,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
     @Override
     protected void onDestroy() {
-        persistState();
+        persistStateNow();
         if (guardian != null) guardian.stop();
         if (geckoView != null && geckoView.getSession() != null) geckoView.releaseSession();
         for (BrowserTab tab : tabs) {
