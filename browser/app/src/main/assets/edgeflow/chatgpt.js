@@ -7,6 +7,8 @@
     pressure: 0,
     thermal: 0,
     pain: 0,
+    forceLive: false,
+    profile: 'Auto',
     shielded: false,
     shieldTarget: null,
     showLiveForCurrentRun: false,
@@ -14,6 +16,7 @@
     loopTimer: 0,
     observer: null,
     observedRoot: null,
+    longTaskObserver: null,
     badge: null,
     turns: [],
     lastTick: performance.now(),
@@ -203,7 +206,7 @@
   }
 
   function applyShield() {
-    if (STATE.showLiveForCurrentRun || document.hidden) return;
+    if (STATE.forceLive || STATE.showLiveForCurrentRun || document.hidden) return;
     const target = currentAssistantTurn();
     if (!target) return;
 
@@ -240,6 +243,7 @@
     const oldThreshold = STATE.shieldThreshold;
     const oldPressure = STATE.pressure;
     const oldThermal = STATE.thermal;
+    const oldForceLive = STATE.forceLive;
 
     const keep = Number(policy.coldKeep);
     const threshold = Number(policy.shieldThreshold);
@@ -247,7 +251,10 @@
     if (Number.isFinite(threshold) && threshold >= 1 && threshold <= 10) STATE.shieldThreshold = threshold;
     STATE.pressure = Number(policy.pressure) || 0;
     STATE.thermal = Number(policy.thermal) || 0;
+    STATE.forceLive = !!policy.forceLive;
+    STATE.profile = typeof policy.profile === 'string' ? policy.profile : STATE.profile;
 
+    if (STATE.forceLive && !oldForceLive) removeShield();
     if (oldPressure !== STATE.pressure || oldThermal !== STATE.thermal) updatePressureClasses();
     if (oldKeep !== STATE.coldKeep) scheduleWindowing();
     if (oldThreshold !== STATE.shieldThreshold && STATE.shielded && STATE.pain < STATE.shieldThreshold) {
@@ -294,7 +301,7 @@
       else if (drift > 55) STATE.pain = Math.min(10, STATE.pain + 0.8);
       else STATE.pain = Math.max(0, STATE.pain - 0.25);
 
-      if (STATE.pain >= STATE.shieldThreshold && !STATE.showLiveForCurrentRun) applyShield();
+      if (!STATE.forceLive && STATE.pain >= STATE.shieldThreshold && !STATE.showLiveForCurrentRun) applyShield();
     } else if (STATE.generationSeen) {
       STATE.generationSeen = false;
       STATE.showLiveForCurrentRun = false;
@@ -318,6 +325,21 @@
     STATE.lastTick = performance.now();
     const delay = document.hidden ? 4000 : 500;
     STATE.loopTimer = setTimeout(() => performanceTick(delay), delay);
+  }
+
+  function startLongTaskObserver() {
+    if (STATE.longTaskObserver || typeof PerformanceObserver === 'undefined') return;
+    try {
+      const supported = PerformanceObserver.supportedEntryTypes || [];
+      if (!supported.includes('longtask')) return;
+      STATE.longTaskObserver = new PerformanceObserver(list => {
+        if (document.hidden || !isGenerating()) return;
+        let worst = 0;
+        for (const entry of list.getEntries()) worst = Math.max(worst, entry.duration || 0);
+        if (worst >= 50) STATE.pain = Math.min(10, STATE.pain + Math.min(3, worst / 100));
+      });
+      STATE.longTaskObserver.observe({ type: 'longtask', buffered: false });
+    } catch (_) {}
   }
 
   function scheduleWindowing() {
@@ -376,15 +398,18 @@
     document.addEventListener('DOMContentLoaded', () => {
       startObserver();
       startPerformanceLoop();
+      startLongTaskObserver();
     }, { once: true });
   } else {
     startObserver();
     startPerformanceLoop();
+    startLongTaskObserver();
   }
 
   window.addEventListener('pageshow', () => {
     startObserver();
     startPerformanceLoop();
+    startLongTaskObserver();
     scheduleWindowing();
     sendTelemetry(true);
   }, { passive: true });
