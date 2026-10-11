@@ -96,9 +96,18 @@ final class EdgeFlowRuntime {
         // file-picker path. This keeps file uploads working while adding alert(),
         // confirm(), prompt(), HTTP auth, before-unload, popup, redirect, repost and
         // Web Share support to every EdgeFlow session.
-        GeckoSession.PromptDelegate existing = session.getPromptDelegate();
-        if (!(existing instanceof BrowserPromptDelegate)) {
-            session.setPromptDelegate(new BrowserPromptDelegate(existing));
+        GeckoSession.PromptDelegate existingPrompt = session.getPromptDelegate();
+        if (!(existingPrompt instanceof BrowserPromptDelegate)) {
+            session.setPromptDelegate(new BrowserPromptDelegate(existingPrompt));
+        }
+
+        // External app links such as tel:, sms:, geo: and intent: need a browser-shell
+        // policy rather than being treated as failed web navigations. The wrapper only
+        // launches them after an explicit user gesture/direct navigation and delegates
+        // every normal web navigation back to Aegis/Atlas unchanged.
+        GeckoSession.NavigationDelegate existingNavigation = session.getNavigationDelegate();
+        if (!(existingNavigation instanceof BrowserNavigationDelegate)) {
+            session.setNavigationDelegate(new BrowserNavigationDelegate(existingNavigation));
         }
 
         runtime.getWebExtensionController()
