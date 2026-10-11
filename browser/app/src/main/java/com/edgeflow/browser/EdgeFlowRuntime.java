@@ -92,22 +92,21 @@ final class EdgeFlowRuntime {
     static void attachBridge(GeckoSession session, NativeBridge bridge) {
         if (session == null || bridge == null || runtime == null) return;
 
-        // Complete common browser prompts without replacing the activity's existing
-        // file-picker path. This keeps file uploads working while adding alert(),
-        // confirm(), prompt(), HTTP auth, before-unload, popup, redirect, repost and
-        // Web Share support to every EdgeFlow session.
         GeckoSession.PromptDelegate existingPrompt = session.getPromptDelegate();
         if (!(existingPrompt instanceof BrowserPromptDelegate)) {
             session.setPromptDelegate(new BrowserPromptDelegate(existingPrompt));
         }
 
-        // External app links such as tel:, sms:, geo: and intent: need a browser-shell
-        // policy rather than being treated as failed web navigations. The wrapper only
-        // launches them after an explicit user gesture/direct navigation and delegates
-        // every normal web navigation back to Aegis/Atlas unchanged.
         GeckoSession.NavigationDelegate existingNavigation = session.getNavigationDelegate();
         if (!(existingNavigation instanceof BrowserNavigationDelegate)) {
             session.setNavigationDelegate(new BrowserNavigationDelegate(existingNavigation));
+        }
+
+        // Preserve the activity's title/download/crash/fullscreen delegate and add
+        // long-press browser actions plus a slow-script recovery UI around it.
+        GeckoSession.ContentDelegate existingContent = session.getContentDelegate();
+        if (!(existingContent instanceof BrowserContentDelegate)) {
+            session.setContentDelegate(new BrowserContentDelegate(existingContent));
         }
 
         runtime.getWebExtensionController()
