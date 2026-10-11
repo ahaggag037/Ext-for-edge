@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace 'com.edgeflow.browser'
-    compileSdk 37
+    compileSdk 36
 
     defaultConfig {
         applicationId 'com.edgeflow.browser'
@@ -37,5 +37,5 @@ android {
 }
 
 dependencies {
-    implementation 'org.mozilla.geckoview:geckoview:157.0.20261005135250'
+    implementation 'org.mozilla.geckoview:geckoview:155.0.20260903215306'
 }
