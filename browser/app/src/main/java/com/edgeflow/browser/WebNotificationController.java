@@ -16,7 +16,8 @@ import org.mozilla.geckoview.WebNotification;
 import org.mozilla.geckoview.WebNotificationDelegate;
 
 final class WebNotificationController implements WebNotificationDelegate {
-    private static final String CHANNEL = "edgeflow_web";
+    private static final String CHANNEL_DEFAULT = "edgeflow_web";
+    private static final String CHANNEL_SILENT = "edgeflow_web_silent";
     private final Context context;
     private final NotificationManager manager;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -25,10 +26,17 @@ final class WebNotificationController implements WebNotificationDelegate {
         this.context = context.getApplicationContext();
         this.manager = (NotificationManager) this.context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && manager != null) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL, "Website notifications", NotificationManager.IMPORTANCE_DEFAULT);
-            channel.setDescription("Notifications requested by websites in EdgeFlow Browser");
-            manager.createNotificationChannel(channel);
+            NotificationChannel normal = new NotificationChannel(
+                    CHANNEL_DEFAULT, "Website notifications", NotificationManager.IMPORTANCE_DEFAULT);
+            normal.setDescription("Notifications requested by websites in EdgeFlow Browser");
+            manager.createNotificationChannel(normal);
+
+            NotificationChannel silent = new NotificationChannel(
+                    CHANNEL_SILENT, "Silent website notifications", NotificationManager.IMPORTANCE_LOW);
+            silent.setDescription("Silent notifications requested by websites in EdgeFlow Browser");
+            silent.setSound(null, null);
+            silent.enableVibration(false);
+            manager.createNotificationChannel(silent);
         }
     }
 
@@ -51,8 +59,7 @@ final class WebNotificationController implements WebNotificationDelegate {
         if (Build.VERSION.SDK_INT >= 33
                 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
-            // The site permission and Android's notification permission are separate.
-            // Do not claim success to web content when Android would silently drop it.
+            // Site permission and Android notification permission are separate.
             web.dismiss();
             return;
         }
@@ -66,8 +73,9 @@ final class WebNotificationController implements WebNotificationDelegate {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pending = PendingIntent.getActivity(context, idFor(web), open, flags);
 
+        String channel = web.silent ? CHANNEL_SILENT : CHANNEL_DEFAULT;
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(context, CHANNEL)
+                ? new Notification.Builder(context, channel)
                 : new Notification.Builder(context);
         builder.setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle(emptyTo(web.title, SitePolicy.host(web.origin)))
@@ -75,7 +83,10 @@ final class WebNotificationController implements WebNotificationDelegate {
                 .setContentIntent(pending)
                 .setAutoCancel(!web.requireInteraction)
                 .setOnlyAlertOnce(false);
-        if (web.silent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setSilent(true);
+        if (web.silent && Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setSound(null);
+            builder.setVibrate(null);
+        }
 
         try {
             manager.notify(idFor(web), builder.build());
