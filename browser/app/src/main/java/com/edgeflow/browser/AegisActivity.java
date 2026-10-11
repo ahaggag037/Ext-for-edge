@@ -1,0 +1,1043 @@
+package com.edgeflow.browser;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.Gravity;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import org.json.JSONObject;
+import org.mozilla.geckoview.GeckoResult;
+import org.mozilla.geckoview.GeckoRuntime;
+import org.mozilla.geckoview.GeckoSession;
+import org.mozilla.geckoview.GeckoSessionSettings;
+import org.mozilla.geckoview.GeckoView;
+import org.mozilla.geckoview.WebRequestError;
+import org.mozilla.geckoview.WebResponse;
+
+/**
+ * Aegis browser shell. Atlas stays untouched as a rollback baseline while this
+ * activity collects the larger v0.4 feature batch.
+ */
+public final class AegisActivity extends Activity implements PerformanceGuardian.Listener {
+    private static final String HOME = "https://chatgpt.com/";
+    private static final int REQ_FILE = 7101;
+    private static final int REQ_ANDROID_PERMISSIONS = 7102;
+
+    private final ArrayList<BrowserTab> tabs = new ArrayList<>();
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable persistRunnable = this::persistStateNow;
+
+    private GeckoRuntime runtime;
+    private GeckoView geckoView;
+    private LinearLayout toolbar;
+    private EditText address;
+    private TextView status;
+    private Button tabsButton;
+    private int currentIndex = -1;
+    private PerformanceGuardian guardian;
+    private BrowserDataStore dataStore;
+
+    private GeckoSession.PromptDelegate.FilePrompt pendingFilePrompt;
+    private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> pendingFileResult;
+    private GeckoSession.PermissionDelegate.Callback pendingPermissionCallback;
+    private GeckoResult<Integer> activeContentPermissionResult;
+    private AlertDialog activeContentPermissionDialog;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(buildUi());
+
+        runtime = EdgeFlowRuntime.getOrCreate(this);
+        guardian = new PerformanceGuardian(this, this);
+        dataStore = BrowserDataStore.get(this);
+
+        SessionStore.Snapshot snapshot = SessionStore.load(this);
+        tabs.addAll(snapshot.tabs);
+        if (tabs.isEmpty()) {
+            tabs.add(new BrowserTab(UUID.randomUUID().toString(), false, false, "ChatGPT", HOME));
+        }
+        currentIndex = Math.min(Math.max(snapshot.selected, 0), tabs.size() - 1);
+
+        String external = externalUrl(getIntent());
+        if (external != null) {
+            BrowserTab first = tabs.get(currentIndex);
+            first.url = external;
+            first.compatibilityMode = shouldUseCompatibility(external);
+            first.sessionState = null;
+        }
+        switchTo(currentIndex);
+    }
+
+    @Override protected void onStart() {
+        super.onStart();
+        if (guardian != null) guardian.start();
+    }
+
+    @Override protected void onStop() {
+        persistStateNow();
+        if (guardian != null) guardian.stop();
+        super.onStop();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        String url = externalUrl(intent);
+        if (url != null) newTab(false, url);
+    }
+
+    private String externalUrl(Intent intent) {
+        if (intent == null || intent.getData() == null) return null;
+        String scheme = intent.getData().getScheme();
+        return ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                ? intent.getData().toString() : null;
+    }
+
+    private View buildUi() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.rgb(10, 13, 18));
+
+        toolbar = new LinearLayout(this);
+        toolbar.setOrientation(LinearLayout.HORIZONTAL);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(2), dp(2), dp(2), dp(2));
+        toolbar.setBackgroundColor(Color.rgb(18, 22, 29));
+
+        Button back = toolbarButton("‹");
+        back.setContentDescription("Back");
+        back.setOnClickListener(v -> goBack());
+        toolbar.addView(back, fixed(dp(42), dp(48)));
+
+        Button forward = toolbarButton("›");
+        forward.setContentDescription("Forward");
+        forward.setOnClickListener(v -> {
+            BrowserTab tab = currentTab();
+            if (tab != null && tab.session != null && tab.canGoForward) tab.session.goForward();
+        });
+        toolbar.addView(forward, fixed(dp(42), dp(48)));
+
+        Button reload = toolbarButton("↻");
+        reload.setContentDescription("Reload");
+        reload.setOnClickListener(v -> reloadCurrent());
+        toolbar.addView(reload, fixed(dp(42), dp(48)));
+
+        address = new EditText(this);
+        address.setSingleLine(true);
+        address.setTextSize(14);
+        address.setTextColor(Color.WHITE);
+        address.setHintTextColor(Color.rgb(130, 140, 155));
+        address.setHint("Search or enter address");
+        address.setBackgroundColor(Color.rgb(31, 37, 48));
+        address.setPadding(dp(12), 0, dp(12), 0);
+        address.setImeOptions(EditorInfo.IME_ACTION_GO);
+        address.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        address.setOnEditorActionListener((TextView v, int actionId, KeyEvent event) -> {
+            if (actionId == EditorInfo.IME_ACTION_GO
+                    || (event != null && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                navigate(address.getText().toString());
+                return true;
+            }
+            return false;
+        });
+        LinearLayout.LayoutParams addressParams = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        addressParams.setMargins(dp(3), 0, dp(3), 0);
+        toolbar.addView(address, addressParams);
+
+        tabsButton = toolbarButton("1");
+        tabsButton.setTextSize(14);
+        tabsButton.setContentDescription("Tabs");
+        tabsButton.setOnClickListener(v -> showTabs());
+        toolbar.addView(tabsButton, fixed(dp(44), dp(48)));
+
+        Button menu = toolbarButton("⋮");
+        menu.setContentDescription("EdgeFlow menu");
+        menu.setOnClickListener(v -> showMenu());
+        toolbar.addView(menu, fixed(dp(42), dp(48)));
+
+        root.addView(toolbar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        status = new TextView(this);
+        status.setTextColor(Color.rgb(160, 180, 200));
+        status.setTextSize(10);
+        status.setSingleLine(true);
+        status.setGravity(Gravity.CENTER_VERTICAL);
+        status.setPadding(dp(8), dp(1), dp(8), dp(2));
+        status.setBackgroundColor(Color.rgb(13, 17, 23));
+        root.addView(status, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(20)));
+
+        geckoView = new GeckoView(this);
+        geckoView.setViewBackend(GeckoView.BACKEND_SURFACE_VIEW);
+        geckoView.coverUntilFirstPaint(Color.rgb(10, 13, 18));
+        root.addView(geckoView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        return root;
+    }
+
+    private BrowserTab currentTab() {
+        return currentIndex >= 0 && currentIndex < tabs.size() ? tabs.get(currentIndex) : null;
+    }
+
+    private boolean shouldUseCompatibility(String url) {
+        return SitePolicy.shouldDefaultCompatibility(url)
+                || BrowserPrefs.isCompatibilityHost(this, SitePolicy.host(url));
+    }
+
+    private void ensureSession(BrowserTab tab) {
+        if (tab.session != null && tab.session.isOpen()) return;
+        if (shouldUseCompatibility(tab.url)) tab.compatibilityMode = true;
+
+        GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
+                .usePrivateMode(tab.privateMode)
+                .useTrackingProtection(!tab.compatibilityMode)
+                .suspendMediaWhenInactive(true)
+                .userAgentMode(tab.desktopMode
+                        ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                        : GeckoSessionSettings.USER_AGENT_MODE_MOBILE)
+                .viewportMode(tab.desktopMode
+                        ? GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                        : GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
+                .build();
+
+        GeckoSession session = new GeckoSession(settings);
+        tab.session = session;
+        tab.hibernated = false;
+        configureSession(tab, session);
+        session.open(runtime);
+        EdgeFlowRuntime.attachBridge(session, (origin, message) -> onExtensionMessage(tab, origin, message));
+
+        if (tab.sessionState != null && !tab.sessionState.isEmpty()) {
+            try {
+                GeckoSession.SessionState restored = GeckoSession.SessionState.fromString(tab.sessionState);
+                if (restored != null) session.restoreState(restored);
+                else session.loadUri(tab.url == null ? HOME : tab.url);
+            } catch (Throwable ignored) {
+                session.loadUri(tab.url == null ? HOME : tab.url);
+            }
+        } else {
+            session.loadUri(tab.url == null ? HOME : tab.url);
+        }
+    }
+
+    private void configureSession(BrowserTab tab, GeckoSession session) {
+        session.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
+            @Override public void onLocationChange(GeckoSession s, String url,
+                    List<GeckoSession.PermissionDelegate.ContentPermission> perms,
+                    Boolean hasUserGesture) {
+                if (url != null) tab.url = url;
+                if (tab == currentTab() && url != null && !address.hasFocus()) address.setText(url);
+                persistState();
+            }
+
+            @Override public void onCanGoBack(GeckoSession s, boolean value) { tab.canGoBack = value; }
+            @Override public void onCanGoForward(GeckoSession s, boolean value) { tab.canGoForward = value; }
+
+            @Override public GeckoResult<GeckoSession> onNewSession(GeckoSession s, String uri) {
+                BrowserTab child = createTab(false, uri == null ? HOME : uri);
+                ensureSession(child);
+                return GeckoResult.fromValue(child.session);
+            }
+
+            @Override public GeckoResult<String> onLoadError(GeckoSession s, String uri, WebRequestError error) {
+                tab.loading = false;
+                tab.lastLoadSucceeded = false;
+                tab.lastErrorCode = error.code;
+                tab.lastErrorCategory = error.category;
+                updateHud();
+
+                if (uri != null && SitePolicy.isChatGptFamily(uri) && !tab.compatibilityMode) {
+                    tab.compatibilityMode = true;
+                    BrowserPrefs.setCompatibilityHost(AegisActivity.this, SitePolicy.host(uri), true);
+                    s.getSettings().setUseTrackingProtection(false);
+                    persistState();
+                    main.postDelayed(() -> { if (tab.session == s) s.loadUri(uri); }, 350L);
+                    return GeckoResult.fromValue("about:blank");
+                }
+                return GeckoResult.fromValue(buildNetworkErrorPage(uri, error));
+            }
+        });
+
+        session.setProgressDelegate(new GeckoSession.ProgressDelegate() {
+            @Override public void onPageStart(GeckoSession s, String url) {
+                tab.lastPageStartMs = System.currentTimeMillis();
+                tab.lastFcpMs = 0L;
+                tab.loading = true;
+                tab.lastErrorCode = 0;
+                tab.lastErrorCategory = 0;
+                if (url != null) tab.url = url;
+                updateHud();
+            }
+
+            @Override public void onPageStop(GeckoSession s, boolean success) {
+                tab.loading = false;
+                tab.lastLoadSucceeded = success;
+                updateHud();
+                persistState();
+            }
+
+            @Override public void onSessionStateChange(GeckoSession s, GeckoSession.SessionState state) {
+                tab.sessionState = state.toString();
+                if (!tab.privateMode) persistState();
+            }
+        });
+
+        session.setHistoryDelegate(new GeckoSession.HistoryDelegate() {
+            @Override public GeckoResult<Boolean> onVisited(GeckoSession s, String url,
+                    String lastVisitedURL, int flags) {
+                if (!tab.privateMode && url != null) dataStore.recordVisit(url, tab.title);
+                return GeckoResult.fromValue(true);
+            }
+        });
+
+        session.setContentDelegate(new GeckoSession.ContentDelegate() {
+            @Override public void onTitleChange(GeckoSession s, String title) {
+                if (title != null && !title.trim().isEmpty()) {
+                    tab.title = title;
+                    if (!tab.privateMode) dataStore.updateTitle(tab.url, title);
+                }
+                updateHud();
+            }
+
+            @Override public void onFirstContentfulPaint(GeckoSession s) {
+                tab.lastFcpMs = Math.max(0L, System.currentTimeMillis() - tab.lastPageStartMs);
+                tab.lastLoadSucceeded = true;
+                updateHud();
+            }
+
+            @Override public void onCrash(GeckoSession s) { recoverTab(tab); }
+            @Override public void onKill(GeckoSession s) { recoverTab(tab); }
+            @Override public void onFullScreen(GeckoSession s, boolean fullScreen) { setBrowserFullscreen(fullScreen); }
+            @Override public void onExternalResponse(GeckoSession s, WebResponse response) {
+                DownloadController.handle(AegisActivity.this, response);
+            }
+        });
+
+        session.setPromptDelegate(new GeckoSession.PromptDelegate() {
+            @Override public GeckoResult<GeckoSession.PromptDelegate.PromptResponse> onFilePrompt(
+                    GeckoSession s, GeckoSession.PromptDelegate.FilePrompt prompt) {
+                return launchFilePrompt(prompt);
+            }
+        });
+
+        session.setPermissionDelegate(new GeckoSession.PermissionDelegate() {
+            @Override public void onAndroidPermissionsRequest(GeckoSession s, String[] permissions,
+                    GeckoSession.PermissionDelegate.Callback callback) {
+                requestAndroidPermissions(permissions, callback);
+            }
+
+            @Override public GeckoResult<Integer> onContentPermissionRequest(GeckoSession s,
+                    GeckoSession.PermissionDelegate.ContentPermission permission) {
+                return handleContentPermission(permission);
+            }
+
+            @Override public void onMediaPermissionRequest(GeckoSession s, String uri,
+                    GeckoSession.PermissionDelegate.MediaSource[] video,
+                    GeckoSession.PermissionDelegate.MediaSource[] audio,
+                    GeckoSession.PermissionDelegate.MediaCallback callback) {
+                String host = SitePolicy.host(uri);
+                new AlertDialog.Builder(AegisActivity.this)
+                        .setTitle("Camera / microphone")
+                        .setMessage((host.isEmpty() ? "This site" : host) + " wants to use media devices.")
+                        .setPositiveButton("Allow", (d, w) -> callback.grant(
+                                video != null && video.length > 0 ? video[0] : null,
+                                audio != null && audio.length > 0 ? audio[0] : null))
+                        .setNegativeButton("Deny", (d, w) -> callback.reject())
+                        .setOnCancelListener(d -> callback.reject())
+                        .show();
+            }
+        });
+    }
+
+    private GeckoResult<Integer> handleContentPermission(
+            GeckoSession.PermissionDelegate.ContentPermission permission) {
+        Integer automatic = PermissionPolicy.autoDecision(permission);
+        if (automatic != null) return GeckoResult.fromValue(automatic);
+
+        if (activeContentPermissionResult != null) {
+            try { activeContentPermissionResult.complete(
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY); }
+            catch (Throwable ignored) {}
+            activeContentPermissionResult = null;
+        }
+        if (activeContentPermissionDialog != null) {
+            try { activeContentPermissionDialog.dismiss(); } catch (Throwable ignored) {}
+            activeContentPermissionDialog = null;
+        }
+
+        GeckoResult<Integer> result = new GeckoResult<>();
+        activeContentPermissionResult = result;
+        String host = SitePolicy.host(permission.uri);
+        String type = PermissionPolicy.label(permission.permission);
+        StringBuilder message = new StringBuilder();
+        message.append(host.isEmpty() ? "This site" : host).append(" requests: ").append(type).append('.');
+        if (permission.thirdPartyOrigin != null && !permission.thirdPartyOrigin.isEmpty()) {
+            String third = SitePolicy.host(permission.thirdPartyOrigin);
+            if (!third.isEmpty()) message.append("\nThird party: ").append(third);
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Site permission")
+                .setMessage(message.toString())
+                .setPositiveButton("Allow", (d, w) -> finishContentPermission(result,
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW))
+                .setNegativeButton("Deny", (d, w) -> finishContentPermission(result,
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
+                .setOnCancelListener(d -> finishContentPermission(result,
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
+                .create();
+        activeContentPermissionDialog = dialog;
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnShowListener(d -> permission.notifyShown());
+        dialog.show();
+        return result;
+    }
+
+    private void finishContentPermission(GeckoResult<Integer> result, int value) {
+        if (activeContentPermissionResult != result) return;
+        try { result.complete(value); } catch (Throwable ignored) {}
+        activeContentPermissionResult = null;
+        activeContentPermissionDialog = null;
+    }
+
+    private JSONObject onExtensionMessage(BrowserTab tab, GeckoSession origin, JSONObject message) {
+        if (tab.session != origin) return new JSONObject();
+        String type = message.optString("type", "");
+        if ("telemetry".equals(type)) {
+            tab.generating = message.optBoolean("generating", false);
+            tab.shielded = message.optBoolean("shielded", false);
+            tab.pain = message.optInt("pain", 0);
+            tab.turnCount = message.optInt("turns", 0);
+            if (tab == currentTab()) updateHud();
+        }
+
+        PerformanceGuardian.Snapshot snap = guardian == null ? null : guardian.latest();
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
+        int pressure = snap == null ? PerformanceGuardian.PRESSURE_NORMAL : snap.pressure;
+        int profile = BrowserPrefs.getAiProfile(this);
+        int dataMode = BrowserPrefs.getDataMode(this);
+        boolean dataSaver = dataMode == BrowserPrefs.DATA_SAVER
+                || (dataMode == BrowserPrefs.DATA_AUTO
+                && (network.metered || pressure >= PerformanceGuardian.PRESSURE_WATCH
+                || (snap != null && snap.powerSaveMode)));
+
+        int coldKeep;
+        int shieldThreshold;
+        boolean forceLive = profile == BrowserPrefs.AI_LIVE;
+        if (profile == BrowserPrefs.AI_SMOOTH) {
+            coldKeep = pressure >= PerformanceGuardian.PRESSURE_HIGH ? 1 : 2;
+            shieldThreshold = 2;
+        } else {
+            coldKeep = pressure >= PerformanceGuardian.PRESSURE_CRITICAL ? 1
+                    : pressure >= PerformanceGuardian.PRESSURE_HIGH ? 2
+                    : pressure >= PerformanceGuardian.PRESSURE_WATCH ? 4 : 6;
+            shieldThreshold = pressure >= PerformanceGuardian.PRESSURE_CRITICAL ? 2
+                    : pressure >= PerformanceGuardian.PRESSURE_HIGH ? 3
+                    : pressure >= PerformanceGuardian.PRESSURE_WATCH ? 4 : 5;
+        }
+
+        JSONObject out = new JSONObject();
+        try {
+            out.put("pressure", pressure);
+            out.put("thermal", snap == null ? 0 : snap.thermalStatus);
+            out.put("powerSave", snap != null && snap.powerSaveMode);
+            out.put("deviceIdle", snap != null && snap.deviceIdleMode);
+            out.put("availablePercent", snap == null ? -1 : snap.availablePercent());
+            out.put("metered", network.metered);
+            out.put("validated", network.validated);
+            out.put("dataMode", BrowserPrefs.dataModeName(dataMode));
+            out.put("dataSaver", dataSaver);
+            out.put("coldKeep", coldKeep);
+            out.put("shieldThreshold", shieldThreshold);
+            out.put("aggressive", profile == BrowserPrefs.AI_SMOOTH
+                    || pressure >= PerformanceGuardian.PRESSURE_HIGH);
+            out.put("forceLive", forceLive);
+            out.put("profile", BrowserPrefs.aiProfileName(profile));
+        } catch (Exception ignored) {}
+        return out;
+    }
+
+    private void switchTo(int index) {
+        if (index < 0 || index >= tabs.size()) return;
+        BrowserTab old = currentTab();
+        if (old != null && old.session != null) {
+            old.session.setFocused(false);
+            old.session.setActive(false);
+            old.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
+        }
+        if (geckoView.getSession() != null) geckoView.releaseSession();
+
+        currentIndex = index;
+        BrowserTab tab = tabs.get(index);
+        ensureSession(tab);
+        tab.lastAccessMs = System.currentTimeMillis();
+        tab.session.setActive(true);
+        tab.session.setFocused(true);
+        tab.session.setPriorityHint(GeckoSession.PRIORITY_HIGH);
+        geckoView.setSession(tab.session);
+        address.setText(tab.url == null ? HOME : tab.url);
+        updateHud();
+        persistState();
+    }
+
+    private BrowserTab createTab(boolean privateMode, String url) {
+        BrowserTab tab = new BrowserTab(UUID.randomUUID().toString(), privateMode, false,
+                privateMode ? "Private tab" : "New tab", url == null ? HOME : url);
+        tab.compatibilityMode = shouldUseCompatibility(tab.url);
+        tabs.add(tab);
+        updateHud();
+        return tab;
+    }
+
+    private void newTab(boolean privateMode, String url) {
+        BrowserTab tab = createTab(privateMode, url);
+        switchTo(tabs.indexOf(tab));
+    }
+
+    private void closeCurrentTab() {
+        if (tabs.isEmpty()) return;
+        BrowserTab tab = currentTab();
+        if (geckoView.getSession() != null) geckoView.releaseSession();
+        if (tab != null && tab.session != null) {
+            tab.session.close();
+            tab.session = null;
+        }
+        tabs.remove(currentIndex);
+        if (tabs.isEmpty()) tabs.add(new BrowserTab(UUID.randomUUID().toString(), false, false, "ChatGPT", HOME));
+        currentIndex = Math.min(currentIndex, tabs.size() - 1);
+        switchTo(currentIndex);
+    }
+
+    private void showTabs() {
+        String[] labels = new String[tabs.size()];
+        for (int i = 0; i < tabs.size(); i++) labels[i] = (i == currentIndex ? "● " : "") + tabs.get(i).label();
+        new AlertDialog.Builder(this)
+                .setTitle("Tabs · " + tabs.size())
+                .setItems(labels, (d, which) -> switchTo(which))
+                .setPositiveButton("New", (d, w) -> newTab(false, HOME))
+                .setNeutralButton("Private", (d, w) -> newTab(true, HOME))
+                .setNegativeButton("Close current", (d, w) -> closeCurrentTab())
+                .show();
+    }
+
+    private void showMenu() {
+        BrowserTab tab = currentTab();
+        boolean desktop = tab != null && tab.desktopMode;
+        boolean compatibility = tab != null && tab.compatibilityMode;
+        int aiProfile = BrowserPrefs.getAiProfile(this);
+        int dataMode = BrowserPrefs.getDataMode(this);
+        String[] items = {
+                "New tab",
+                "New private tab",
+                "Tabs",
+                "★ Bookmark / remove bookmark",
+                "Bookmarks",
+                "History",
+                desktop ? "Use mobile site" : "Use desktop site",
+                "Find in page",
+                "Share page",
+                compatibility ? "Compatibility mode: ON" : "Compatibility mode: OFF",
+                "AI performance: " + BrowserPrefs.aiProfileName(aiProfile),
+                "Data mode: " + BrowserPrefs.dataModeName(dataMode),
+                "Search engine: " + BrowserPrefs.searchEngineName(BrowserPrefs.getSearchEngine(this)),
+                "Site data & permissions",
+                "Hibernate background tabs",
+                "Network doctor",
+                "Performance details"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("EdgeFlow Aegis")
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0: newTab(false, HOME); break;
+                        case 1: newTab(true, HOME); break;
+                        case 2: showTabs(); break;
+                        case 3: toggleBookmark(); break;
+                        case 4: showBookmarks(); break;
+                        case 5: showHistory(); break;
+                        case 6: toggleDesktopMode(); break;
+                        case 7: findInPage(); break;
+                        case 8: shareCurrent(); break;
+                        case 9: toggleCompatibilityMode(); break;
+                        case 10: chooseAiPerformanceMode(); break;
+                        case 11: chooseDataMode(); break;
+                        case 12: chooseSearchEngine(); break;
+                        case 13: showSiteControls(); break;
+                        case 14: hibernateBackgroundTabs(); break;
+                        case 15: showNetworkDoctor(); break;
+                        case 16: showPerformanceDetails(); break;
+                    }
+                }).show();
+    }
+
+    private void toggleBookmark() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.privateMode || tab.url == null) {
+            toast("Bookmarks are unavailable in private tabs");
+            return;
+        }
+        dataStore.toggleBookmark(tab.url, tab.title, added -> toast(added ? "Bookmarked" : "Bookmark removed"));
+    }
+
+    private void showBookmarks() {
+        dataStore.bookmarks(entries -> showStoredEntries("Bookmarks", entries, false));
+    }
+
+    private void showHistory() {
+        dataStore.recentHistory(80, entries -> showStoredEntries("Recent history", entries, true));
+    }
+
+    private void showStoredEntries(String title, List<BrowserDataStore.Entry> entries, boolean history) {
+        if (entries == null || entries.isEmpty()) {
+            toast(title + " is empty");
+            return;
+        }
+        String[] labels = new String[entries.size()];
+        for (int i = 0; i < entries.size(); i++) labels[i] = entries.get(i).label();
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(labels, (d, which) -> {
+                    BrowserTab tab = currentTab();
+                    if (tab != null && tab.session != null) {
+                        tab.url = entries.get(which).url;
+                        tab.session.loadUri(tab.url);
+                    }
+                })
+                .setNegativeButton("Close", null);
+        if (history) {
+            builder.setNeutralButton("Clear history", (d, w) -> dataStore.clearHistory(ok -> toast("History cleared")));
+        }
+        builder.show();
+    }
+
+    private void toggleDesktopMode() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.session == null) return;
+        tab.desktopMode = !tab.desktopMode;
+        tab.session.getSettings().setUserAgentMode(tab.desktopMode
+                ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP : GeckoSessionSettings.USER_AGENT_MODE_MOBILE);
+        tab.session.getSettings().setViewportMode(tab.desktopMode
+                ? GeckoSessionSettings.VIEWPORT_MODE_DESKTOP : GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
+        tab.session.reload();
+        persistState();
+    }
+
+    private void toggleCompatibilityMode() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.session == null) return;
+        tab.compatibilityMode = !tab.compatibilityMode;
+        String host = SitePolicy.host(tab.url);
+        BrowserPrefs.setCompatibilityHost(this, host, tab.compatibilityMode);
+        tab.session.getSettings().setUseTrackingProtection(!tab.compatibilityMode);
+        tab.sessionState = null;
+        persistStateNow();
+        toast(tab.compatibilityMode ? "Compatibility saved for " + host : "Tracking protection restored for " + host);
+        tab.session.reload();
+        updateHud();
+    }
+
+    private void chooseAiPerformanceMode() {
+        int current = BrowserPrefs.getAiProfile(this);
+        String[] modes = {"Auto · adaptive", "Max smoothness · aggressive", "Live response · never hide streaming"};
+        new AlertDialog.Builder(this).setTitle("AI performance mode")
+                .setSingleChoiceItems(modes, current, (dialog, which) -> {
+                    BrowserPrefs.setAiProfile(this, which);
+                    dialog.dismiss();
+                    updateHud();
+                    toast("AI performance: " + BrowserPrefs.aiProfileName(which));
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void chooseDataMode() {
+        int current = BrowserPrefs.getDataMode(this);
+        String[] modes = {"Auto · save on metered / pressure", "Saver · reduce background media", "Full quality · never data-throttle pages"};
+        new AlertDialog.Builder(this).setTitle("Data mode")
+                .setSingleChoiceItems(modes, current, (dialog, which) -> {
+                    BrowserPrefs.setDataMode(this, which);
+                    dialog.dismiss();
+                    updateHud();
+                    toast("Data mode: " + BrowserPrefs.dataModeName(which));
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void chooseSearchEngine() {
+        int current = BrowserPrefs.getSearchEngine(this);
+        String[] engines = {"Google", "DuckDuckGo", "Brave Search"};
+        new AlertDialog.Builder(this).setTitle("Search engine")
+                .setSingleChoiceItems(engines, current, (dialog, which) -> {
+                    BrowserPrefs.setSearchEngine(this, which);
+                    dialog.dismiss();
+                    toast("Search: " + BrowserPrefs.searchEngineName(which));
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void showSiteControls() {
+        BrowserTab tab = currentTab();
+        if (tab == null) return;
+        String host = SitePolicy.host(tab.url);
+        String[] actions = {"Clear this site's data", "Reset this site's permissions", "Clear browser caches"};
+        new AlertDialog.Builder(this).setTitle(host.isEmpty() ? "Site controls" : host)
+                .setItems(actions, (d, which) -> {
+                    SiteDataController.Callback cb = (ok, message) -> runOnUiThread(() -> {
+                        toast(message);
+                        if (ok && which != 2) reloadCurrent();
+                    });
+                    if (which == 0) SiteDataController.clearCurrentSite(runtime, tab.url, cb);
+                    else if (which == 1) SiteDataController.clearCurrentPermissions(runtime, tab.url, cb);
+                    else SiteDataController.clearCaches(runtime, cb);
+                }).setNegativeButton("Close", null).show();
+    }
+
+    private void findInPage() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.session == null) return;
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        new AlertDialog.Builder(this).setTitle("Find in page").setView(input)
+                .setPositiveButton("Find", (d, w) -> {
+                    String q = input.getText().toString();
+                    if (q.isEmpty()) return;
+                    tab.session.getFinder().setDisplayFlags(GeckoSession.FINDER_DISPLAY_HIGHLIGHT_ALL);
+                    tab.session.getFinder().find(q, GeckoSession.FINDER_FIND_FORWARD).accept(result -> {
+                        if (result != null) toast(result.found
+                                ? "Match " + result.current + (result.total >= 0 ? " of " + result.total : "")
+                                : "No match");
+                    });
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void shareCurrent() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.url == null) return;
+        Intent share = new Intent(Intent.ACTION_SEND);
+        share.setType("text/plain");
+        share.putExtra(Intent.EXTRA_TEXT, tab.url);
+        startActivity(Intent.createChooser(share, "Share page"));
+    }
+
+    private void hibernateBackgroundTabs() {
+        for (int i = 0; i < tabs.size(); i++) if (i != currentIndex) requestHibernate(tabs.get(i));
+    }
+
+    private void requestHibernate(BrowserTab tab) {
+        if (tab.session == null || tab.hibernated) return;
+        GeckoSession session = tab.session;
+        session.setFocused(false);
+        session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT);
+        session.setActive(false);
+        session.flushSessionState();
+        session.containsFormData().accept(hasData -> {
+            if (Boolean.TRUE.equals(hasData)) return;
+            main.postDelayed(() -> {
+                if (tab.session != session || tab == currentTab()) return;
+                if (tab.sessionState == null || tab.sessionState.isEmpty()) return;
+                session.close();
+                tab.session = null;
+                tab.hibernated = true;
+                updateHud();
+                persistState();
+            }, 250L);
+        }, error -> {});
+    }
+
+    private void recoverTab(BrowserTab tab) {
+        if (tab.session != null && geckoView.getSession() == tab.session) geckoView.releaseSession();
+        tab.session = null;
+        tab.hibernated = true;
+        if (tab == currentTab()) main.postDelayed(() -> {
+            ensureSession(tab);
+            tab.session.setActive(true);
+            tab.session.setFocused(true);
+            tab.session.setPriorityHint(GeckoSession.PRIORITY_HIGH);
+            geckoView.setSession(tab.session);
+            toast("Tab recovered after content-process restart");
+        }, 150L);
+    }
+
+    @Override public void onPressureChanged(PerformanceGuardian.Snapshot snapshot) {
+        updateHud();
+        if (snapshot.pressure >= PerformanceGuardian.PRESSURE_HIGH) hibernateBackgroundTabs();
+    }
+
+    @Override public void onTrimMemory(int level) {
+        if (guardian != null) guardian.onTrimMemory(level);
+        if (level >= 20) hibernateBackgroundTabs();
+        super.onTrimMemory(level);
+    }
+
+    private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> launchFilePrompt(
+            GeckoSession.PromptDelegate.FilePrompt prompt) {
+        if (pendingFileResult != null && pendingFilePrompt != null) pendingFileResult.complete(pendingFilePrompt.dismiss());
+        pendingFilePrompt = prompt;
+        pendingFileResult = new GeckoResult<>();
+        Intent intent = prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.FOLDER
+                ? new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+                : new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE);
+        if (prompt.type != GeckoSession.PromptDelegate.FilePrompt.Type.FOLDER) {
+            String[] mime = prompt.mimeTypes;
+            intent.setType(mime != null && mime.length == 1 ? mime[0] : "*/*");
+            if (mime != null && mime.length > 1) intent.putExtra(Intent.EXTRA_MIME_TYPES, mime);
+            if (prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE) intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        }
+        try { startActivityForResult(intent, REQ_FILE); }
+        catch (Throwable error) {
+            pendingFileResult.complete(prompt.dismiss());
+            clearFilePrompt();
+        }
+        return pendingFileResult;
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_FILE || pendingFilePrompt == null || pendingFileResult == null) return;
+        try {
+            if (resultCode != RESULT_OK || data == null) pendingFileResult.complete(pendingFilePrompt.dismiss());
+            else if (data.getClipData() != null) {
+                ClipData clip = data.getClipData();
+                Uri[] uris = new Uri[clip.getItemCount()];
+                for (int i = 0; i < clip.getItemCount(); i++) uris[i] = clip.getItemAt(i).getUri();
+                pendingFileResult.complete(pendingFilePrompt.confirm(getApplicationContext(), uris));
+            } else if (data.getData() != null) {
+                pendingFileResult.complete(pendingFilePrompt.confirm(getApplicationContext(), data.getData()));
+            } else pendingFileResult.complete(pendingFilePrompt.dismiss());
+        } catch (Throwable error) {
+            try { pendingFileResult.complete(pendingFilePrompt.dismiss()); } catch (Throwable ignored) {}
+        } finally { clearFilePrompt(); }
+    }
+
+    private void clearFilePrompt() {
+        pendingFilePrompt = null;
+        pendingFileResult = null;
+    }
+
+    private void requestAndroidPermissions(String[] permissions, GeckoSession.PermissionDelegate.Callback callback) {
+        if (permissions == null || permissions.length == 0) { callback.grant(); return; }
+        ArrayList<String> missing = new ArrayList<>();
+        for (String permission : permissions) {
+            if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) missing.add(permission);
+        }
+        if (missing.isEmpty()) { callback.grant(); return; }
+        if (pendingPermissionCallback != null) pendingPermissionCallback.reject();
+        pendingPermissionCallback = callback;
+        requestPermissions(missing.toArray(new String[0]), REQ_ANDROID_PERMISSIONS);
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_ANDROID_PERMISSIONS || pendingPermissionCallback == null) return;
+        boolean granted = grantResults.length > 0;
+        for (int value : grantResults) granted &= value == PackageManager.PERMISSION_GRANTED;
+        if (granted) pendingPermissionCallback.grant(); else pendingPermissionCallback.reject();
+        pendingPermissionCallback = null;
+    }
+
+    private void navigate(String raw) {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.session == null) return;
+        String value = raw == null ? "" : raw.trim();
+        if (value.isEmpty()) return;
+        String target;
+        if (value.startsWith("http://") || value.startsWith("https://")) target = value;
+        else if (value.contains(" ") || !value.contains(".")) target = BrowserPrefs.searchUrl(this, value);
+        else target = "https://" + value;
+
+        boolean desiredCompatibility = shouldUseCompatibility(target);
+        if (desiredCompatibility != tab.compatibilityMode) {
+            tab.compatibilityMode = desiredCompatibility;
+            tab.session.getSettings().setUseTrackingProtection(!desiredCompatibility);
+        }
+        tab.url = target;
+        address.setText(target);
+        tab.session.loadUri(target);
+        persistState();
+    }
+
+    private void goBack() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.session == null) return;
+        tab.session.processBackPressed().accept(consumed -> {
+            if (!Boolean.TRUE.equals(consumed) && tab.canGoBack) tab.session.goBack();
+        });
+    }
+
+    private void reloadCurrent() {
+        BrowserTab tab = currentTab();
+        if (tab != null && tab.session != null) tab.session.reload();
+    }
+
+    private void setBrowserFullscreen(boolean fullScreen) {
+        toolbar.setVisibility(fullScreen ? View.GONE : View.VISIBLE);
+        status.setVisibility(fullScreen ? View.GONE : View.VISIBLE);
+        Window window = getWindow();
+        if (fullScreen) window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+    }
+
+    private void showNetworkDoctor() {
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
+        BrowserTab tab = currentTab();
+        StringBuilder text = new StringBuilder();
+        text.append("Transport: ").append(network.transport).append("\n")
+                .append("Internet capability: ").append(network.connected ? "yes" : "no").append("\n")
+                .append("Android validated: ").append(network.validated ? "yes" : "no").append("\n")
+                .append("Metered: ").append(network.metered ? "yes" : "no").append("\n");
+        if (tab != null) {
+            text.append("\nCurrent site: ").append(SitePolicy.host(tab.url)).append("\n")
+                    .append("Compatibility: ").append(tab.compatibilityMode ? "on" : "off").append("\n")
+                    .append("Last load: ").append(tab.lastLoadSucceeded ? "ok" : "failed");
+            if (!tab.lastLoadSucceeded) text.append("\nError category/code: ")
+                    .append(tab.lastErrorCategory).append('/').append(tab.lastErrorCode);
+        }
+        new AlertDialog.Builder(this).setTitle("Network Doctor").setMessage(text.toString())
+                .setPositiveButton("Reload", (d, w) -> reloadCurrent())
+                .setNeutralButton("Compatibility", (d, w) -> {
+                    BrowserTab current = currentTab();
+                    if (current != null && !current.compatibilityMode) toggleCompatibilityMode();
+                }).setNegativeButton("Close", null).show();
+    }
+
+    private String buildNetworkErrorPage(String failedUri, WebRequestError error) {
+        NetworkDoctor.Snapshot net = NetworkDoctor.inspect(this);
+        String original = failedUri == null ? HOME : failedUri;
+        String html = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+                + "<style>body{background:#0a0d12;color:#eef3f8;font-family:sans-serif;padding:28px;line-height:1.5}"
+                + "a{color:#72a7ff}code{background:#171d27;padding:3px 6px;border-radius:6px}</style>"
+                + "<h2>EdgeFlow could not load this page</h2>"
+                + "<p>Network: <b>" + htmlEscape(net.shortLabel()) + "</b> · validated: " + net.validated + "</p>"
+                + "<p>Gecko error: <code>" + error.category + "/" + error.code + "</code></p>"
+                + "<p><a href='" + htmlEscape(original) + "'>Retry page</a></p>"
+                + "<p>Use Compatibility mode for login or AI sites that block strict protections.</p>";
+        return "data:text/html;charset=utf-8," + Uri.encode(html);
+    }
+
+    private String htmlEscape(String value) {
+        if (value == null) return "";
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&#39;");
+    }
+
+    private void showPerformanceDetails() {
+        PerformanceGuardian.Snapshot snap = guardian == null ? null : guardian.latest();
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
+        BrowserTab tab = currentTab();
+        StringBuilder text = new StringBuilder();
+        if (snap != null) {
+            text.append("Available RAM: ").append(snap.availablePercent()).append("%\n")
+                    .append("Pressure: ").append(pressureName(snap.pressure)).append("\n")
+                    .append("Thermal: ").append(snap.thermalStatus).append("\n")
+                    .append("Power saver: ").append(snap.powerSaveMode ? "on" : "off").append("\n")
+                    .append("Device idle: ").append(snap.deviceIdleMode ? "yes" : "no").append("\n");
+        }
+        text.append("Network: ").append(network.shortLabel()).append("\n")
+                .append("Data mode: ").append(BrowserPrefs.dataModeName(BrowserPrefs.getDataMode(this))).append("\n")
+                .append("AI profile: ").append(BrowserPrefs.aiProfileName(BrowserPrefs.getAiProfile(this))).append("\n")
+                .append("Tabs: ").append(tabs.size()).append("\n");
+        int frozen = 0;
+        for (BrowserTab t : tabs) if (t.hibernated) frozen++;
+        text.append("Hibernated: ").append(frozen).append("\n");
+        if (tab != null) {
+            text.append("Compatibility: ").append(tab.compatibilityMode ? "on" : "off").append("\n")
+                    .append("ChatGPT turns: ").append(tab.turnCount).append("\n")
+                    .append("Render pressure: ").append(tab.pain).append("\n")
+                    .append("Stream Shield: ").append(tab.shielded ? "active" : "idle").append("\n")
+                    .append("Last first paint: ").append(tab.lastFcpMs).append(" ms");
+        }
+        new AlertDialog.Builder(this).setTitle("Aegis Performance HUD")
+                .setMessage(text.toString()).setPositiveButton("OK", null).show();
+    }
+
+    private void updateHud() {
+        if (status == null || tabsButton == null) return;
+        tabsButton.setText(String.valueOf(tabs.size()));
+        PerformanceGuardian.Snapshot snap = guardian == null ? null : guardian.latest();
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
+        BrowserTab tab = currentTab();
+        String ram = snap == null || snap.availablePercent() < 0 ? "RAM ?" : "RAM " + snap.availablePercent() + "%";
+        String pressure = snap == null ? "" : " · " + pressureName(snap.pressure);
+        String power = snap != null && snap.powerSaveMode ? " · saver" : "";
+        String net = " · " + network.shortLabel();
+        String load = tab != null && tab.loading ? " · loading" : tab != null && !tab.lastLoadSucceeded ? " · net error" : "";
+        String ai = tab != null && tab.shielded ? " · ⚡ Shield" : tab != null && tab.generating ? " · AI streaming" : "";
+        String compat = tab != null && tab.compatibilityMode ? " · compat" : "";
+        String priv = tab != null && tab.privateMode ? " · Private" : "";
+        status.setText("Aegis · " + ram + pressure + power + net + load + ai + compat + priv);
+    }
+
+    private String pressureName(int p) {
+        if (p >= PerformanceGuardian.PRESSURE_CRITICAL) return "critical";
+        if (p >= PerformanceGuardian.PRESSURE_HIGH) return "high";
+        if (p >= PerformanceGuardian.PRESSURE_WATCH) return "watch";
+        return "normal";
+    }
+
+    private void persistState() {
+        main.removeCallbacks(persistRunnable);
+        main.postDelayed(persistRunnable, 700L);
+    }
+
+    private void persistStateNow() {
+        main.removeCallbacks(persistRunnable);
+        if (!tabs.isEmpty()) SessionStore.save(this, tabs, Math.max(0, currentIndex));
+    }
+
+    private Button toolbarButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(20);
+        b.setTextColor(Color.WHITE);
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setPadding(0, 0, 0, 0);
+        return b;
+    }
+
+    private LinearLayout.LayoutParams fixed(int w, int h) { return new LinearLayout.LayoutParams(w, h); }
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private void toast(String message) { Toast.makeText(this, message, Toast.LENGTH_SHORT).show(); }
+
+    @Override public void onBackPressed() { goBack(); }
+
+    @Override protected void onDestroy() {
+        persistStateNow();
+        if (guardian != null) guardian.stop();
+        if (activeContentPermissionResult != null) {
+            try { activeContentPermissionResult.complete(
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY); }
+            catch (Throwable ignored) {}
+            activeContentPermissionResult = null;
+        }
+        if (geckoView != null && geckoView.getSession() != null) geckoView.releaseSession();
+        for (BrowserTab tab : tabs) {
+            if (tab.session != null) {
+                tab.session.setActive(false);
+                tab.session.close();
+                tab.session = null;
+            }
+        }
+        super.onDestroy();
+    }
+}
