@@ -10,12 +10,16 @@ Build an Android browser that owns the full browsing experience instead of depen
 - The app controls sessions, tabs, lifecycle and Android-level memory decisions.
 
 ## Genesis scope (0.1)
-- GeckoView 157.0.20261005135250.
+- GeckoView 153.0.20260810162159, selected as the newest tested line that builds against the Android API 36 SDK currently available in GitHub Actions.
+- Android minSdk 26, required by this GeckoView line.
 - Navigable Android browser shell with address/search bar, back, forward and reload.
 - `http` / `https` intent handling so EdgeFlow Browser can become a default browser.
 - EdgeFlow Core bundled in `assets/edgeflow/` and installed on first run.
 - ChatGPT performance engine with historical-turn containment, event-loop pressure detection and adaptive Stream Shield.
 - CI builds an installable debug APK on every commit to `browser/geckoview-genesis`.
+
+## Upgrade path
+The newest GeckoView line currently requires Android compile API 37. The GitHub-hosted Android SDK repository used by this workflow does not yet expose `platforms;android-37`, so Genesis remains on GeckoView 153 until that build prerequisite is available. This does not prevent later engine upgrades.
 
 ## Next native layers
 1. **Tab Engine** — multiple persistent GeckoSession instances, suspend/resume and crash isolation.
