@@ -49,6 +49,27 @@ final class EdgeTargets {
         return all.isEmpty() ? null : all.get(0);
     }
 
+    static InstalledEdge bestPrivateCrxTarget(Context context) {
+        for (InstalledEdge edge : installed(context)) {
+            if (supportsPrivateCrx(edge)) return edge;
+        }
+        return null;
+    }
+
+    static boolean supportsPrivateCrx(InstalledEdge edge) {
+        if (edge == null) return false;
+        // Current Android sideload runbooks confirm the hidden CRX flow on Canary/Beta.
+        // Stable exposes only Microsoft's curated mobile extension catalog.
+        return CANARY.equals(edge.packageName) || BETA.equals(edge.packageName);
+    }
+
+    static boolean hasStable(Context context) {
+        for (InstalledEdge edge : installed(context)) {
+            if (STABLE.equals(edge.packageName)) return true;
+        }
+        return false;
+    }
+
     static boolean majorAtLeast(String version, int required) {
         try {
             String first = version == null ? "" : version.split("\\.")[0];
