@@ -1,6 +1,13 @@
 (() => {
   'use strict';
 
+  // ChatGPT has its own specialized optimizer. Running both engines on the same
+  // page would duplicate DOM observers and native-policy polling on the hottest
+  // workload we care about, so the global engine deliberately gets out of the way.
+  const host = location.hostname.toLowerCase();
+  if (host === 'chatgpt.com' || host.endsWith('.chatgpt.com')
+      || host === 'chat.openai.com' || host.endsWith('.openai.com')) return;
+
   const STATE = {
     pressure: 0,
     aggressive: false,
