@@ -32,6 +32,7 @@ import org.mozilla.geckoview.GeckoRuntime;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
+import org.mozilla.geckoview.WebRequestError;
 import org.mozilla.geckoview.WebResponse;
 
 public final class BrowserActivity extends Activity implements PerformanceGuardian.Listener {
@@ -54,6 +55,8 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
     private GeckoSession.PromptDelegate.FilePrompt pendingFilePrompt;
     private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> pendingFileResult;
     private GeckoSession.PermissionDelegate.Callback pendingPermissionCallback;
+    private GeckoResult<Integer> activeContentPermissionResult;
+    private AlertDialog activeContentPermissionDialog;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -74,6 +77,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
         if (external != null) {
             BrowserTab first = tabs.get(currentIndex);
             first.url = external;
+            first.compatibilityMode = SitePolicy.shouldDefaultCompatibility(external);
             first.sessionState = null;
         }
         switchTo(currentIndex);
@@ -205,7 +209,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
         GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
                 .usePrivateMode(tab.privateMode)
-                .useTrackingProtection(true)
+                .useTrackingProtection(!tab.compatibilityMode)
                 .suspendMediaWhenInactive(true)
                 .userAgentMode(tab.desktopMode
                         ? GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
@@ -255,16 +259,42 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                 ensureSession(child);
                 return GeckoResult.fromValue(child.session);
             }
+
+            @Override
+            public GeckoResult<String> onLoadError(GeckoSession s, String uri, WebRequestError error) {
+                tab.loading = false;
+                tab.lastLoadSucceeded = false;
+                tab.lastErrorCode = error.code;
+                tab.lastErrorCategory = error.category;
+                updateHud();
+
+                if (uri != null && SitePolicy.isChatGptFamily(uri) && !tab.compatibilityMode) {
+                    tab.compatibilityMode = true;
+                    s.getSettings().setUseTrackingProtection(false);
+                    persistState();
+                    main.postDelayed(() -> {
+                        if (tab.session == s) s.loadUri(uri);
+                    }, 350L);
+                    return GeckoResult.fromValue("about:blank");
+                }
+                return GeckoResult.fromValue(buildNetworkErrorPage(uri, error));
+            }
         });
 
         session.setProgressDelegate(new GeckoSession.ProgressDelegate() {
             @Override public void onPageStart(GeckoSession s, String url) {
                 tab.lastPageStartMs = System.currentTimeMillis();
+                tab.lastFcpMs = 0L;
+                tab.loading = true;
+                tab.lastErrorCode = 0;
+                tab.lastErrorCategory = 0;
                 if (url != null) tab.url = url;
                 updateHud();
             }
 
             @Override public void onPageStop(GeckoSession s, boolean success) {
+                tab.loading = false;
+                tab.lastLoadSucceeded = success;
                 updateHud();
                 persistState();
             }
@@ -284,6 +314,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
             @Override public void onFirstContentfulPaint(GeckoSession s) {
                 tab.lastFcpMs = Math.max(0L, System.currentTimeMillis() - tab.lastPageStartMs);
+                tab.lastLoadSucceeded = true;
                 updateHud();
             }
 
@@ -317,22 +348,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
             @Override
             public GeckoResult<Integer> onContentPermissionRequest(GeckoSession s,
                     GeckoSession.PermissionDelegate.ContentPermission permission) {
-                GeckoResult<Integer> result = new GeckoResult<>();
-                permission.notifyShown();
-                String host;
-                try { host = Uri.parse(permission.uri).getHost(); }
-                catch (Throwable ignored) { host = permission.uri; }
-                new AlertDialog.Builder(BrowserActivity.this)
-                        .setTitle("Site permission")
-                        .setMessage((host == null ? "This site" : host) + " is requesting browser permission.")
-                        .setPositiveButton("Allow", (d, w) -> result.complete(
-                                GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW))
-                        .setNegativeButton("Deny", (d, w) -> result.complete(
-                                GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
-                        .setOnCancelListener(d -> result.complete(
-                                GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
-                        .show();
-                return result;
+                return handleContentPermission(permission);
             }
 
             @Override
@@ -340,12 +356,10 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                     GeckoSession.PermissionDelegate.MediaSource[] video,
                     GeckoSession.PermissionDelegate.MediaSource[] audio,
                     GeckoSession.PermissionDelegate.MediaCallback callback) {
-                String host;
-                try { host = Uri.parse(uri).getHost(); }
-                catch (Throwable ignored) { host = uri; }
+                String host = SitePolicy.host(uri);
                 new AlertDialog.Builder(BrowserActivity.this)
                         .setTitle("Camera / microphone")
-                        .setMessage((host == null ? "This site" : host) + " wants to use media devices.")
+                        .setMessage((host.isEmpty() ? "This site" : host) + " wants to use media devices.")
                         .setPositiveButton("Allow", (d, w) -> callback.grant(
                                 video != null && video.length > 0 ? video[0] : null,
                                 audio != null && audio.length > 0 ? audio[0] : null))
@@ -354,6 +368,59 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                         .show();
             }
         });
+    }
+
+    private GeckoResult<Integer> handleContentPermission(
+            GeckoSession.PermissionDelegate.ContentPermission permission) {
+        Integer automatic = PermissionPolicy.autoDecision(permission);
+        if (automatic != null) return GeckoResult.fromValue(automatic);
+
+        if (activeContentPermissionResult != null) {
+            try {
+                activeContentPermissionResult.complete(
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
+            } catch (Throwable ignored) {}
+            activeContentPermissionResult = null;
+        }
+        if (activeContentPermissionDialog != null) {
+            try { activeContentPermissionDialog.dismiss(); } catch (Throwable ignored) {}
+            activeContentPermissionDialog = null;
+        }
+
+        GeckoResult<Integer> result = new GeckoResult<>();
+        activeContentPermissionResult = result;
+        String host = SitePolicy.host(permission.uri);
+        String type = PermissionPolicy.label(permission.permission);
+        StringBuilder message = new StringBuilder();
+        message.append(host.isEmpty() ? "This site" : host)
+                .append(" requests: ").append(type).append('.');
+        if (permission.thirdPartyOrigin != null && !permission.thirdPartyOrigin.isEmpty()) {
+            String third = SitePolicy.host(permission.thirdPartyOrigin);
+            if (!third.isEmpty()) message.append("\nThird party: ").append(third);
+        }
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Site permission")
+                .setMessage(message.toString())
+                .setPositiveButton("Allow", (d, w) -> finishContentPermission(
+                        result, GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW))
+                .setNegativeButton("Deny", (d, w) -> finishContentPermission(
+                        result, GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
+                .setOnCancelListener(d -> finishContentPermission(
+                        result, GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY))
+                .create();
+        activeContentPermissionDialog = dialog;
+        dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnShowListener(d -> permission.notifyShown());
+        dialog.show();
+        return result;
+    }
+
+    private void finishContentPermission(GeckoResult<Integer> result, int value) {
+        if (activeContentPermissionResult != result) return;
+        try { result.complete(value); } catch (Throwable ignored) {}
+        activeContentPermissionResult = null;
+        activeContentPermissionDialog = null;
     }
 
     private JSONObject onExtensionMessage(BrowserTab tab, GeckoSession origin, JSONObject message) {
@@ -369,12 +436,22 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
 
         PerformanceGuardian.Snapshot snap = guardian == null ? null : guardian.latest();
         int pressure = snap == null ? PerformanceGuardian.PRESSURE_NORMAL : snap.pressure;
-        int coldKeep = pressure >= PerformanceGuardian.PRESSURE_CRITICAL ? 1
-                : pressure >= PerformanceGuardian.PRESSURE_HIGH ? 2
-                : pressure >= PerformanceGuardian.PRESSURE_WATCH ? 4 : 6;
-        int shieldThreshold = pressure >= PerformanceGuardian.PRESSURE_CRITICAL ? 2
-                : pressure >= PerformanceGuardian.PRESSURE_HIGH ? 3
-                : pressure >= PerformanceGuardian.PRESSURE_WATCH ? 4 : 5;
+        int profile = BrowserPrefs.getAiProfile(this);
+        int coldKeep;
+        int shieldThreshold;
+        boolean forceLive = profile == BrowserPrefs.AI_LIVE;
+        if (profile == BrowserPrefs.AI_SMOOTH) {
+            coldKeep = pressure >= PerformanceGuardian.PRESSURE_HIGH ? 1 : 2;
+            shieldThreshold = 2;
+        } else {
+            coldKeep = pressure >= PerformanceGuardian.PRESSURE_CRITICAL ? 1
+                    : pressure >= PerformanceGuardian.PRESSURE_HIGH ? 2
+                    : pressure >= PerformanceGuardian.PRESSURE_WATCH ? 4 : 6;
+            shieldThreshold = pressure >= PerformanceGuardian.PRESSURE_CRITICAL ? 2
+                    : pressure >= PerformanceGuardian.PRESSURE_HIGH ? 3
+                    : pressure >= PerformanceGuardian.PRESSURE_WATCH ? 4 : 5;
+        }
+
         JSONObject out = new JSONObject();
         try {
             out.put("pressure", pressure);
@@ -382,7 +459,10 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
             out.put("availablePercent", snap == null ? -1 : snap.availablePercent());
             out.put("coldKeep", coldKeep);
             out.put("shieldThreshold", shieldThreshold);
-            out.put("aggressive", pressure >= PerformanceGuardian.PRESSURE_HIGH);
+            out.put("aggressive", profile == BrowserPrefs.AI_SMOOTH
+                    || pressure >= PerformanceGuardian.PRESSURE_HIGH);
+            out.put("forceLive", forceLive);
+            out.put("profile", BrowserPrefs.aiProfileName(profile));
         } catch (Exception ignored) {}
         return out;
     }
@@ -452,6 +532,8 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
     private void showMenu() {
         BrowserTab tab = currentTab();
         boolean desktop = tab != null && tab.desktopMode;
+        boolean compatibility = tab != null && tab.compatibilityMode;
+        int aiProfile = BrowserPrefs.getAiProfile(this);
         String[] items = {
                 "New tab",
                 "New private tab",
@@ -460,11 +542,14 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                 "Find in page",
                 "Share page",
                 "Copy URL",
+                compatibility ? "Compatibility mode: ON" : "Compatibility mode: OFF",
+                "AI performance: " + BrowserPrefs.aiProfileName(aiProfile),
                 "Hibernate background tabs",
+                "Network doctor",
                 "Performance details"
         };
         new AlertDialog.Builder(this)
-                .setTitle("EdgeFlow Hyperion")
+                .setTitle("EdgeFlow Atlas")
                 .setItems(items, (d, which) -> {
                     switch (which) {
                         case 0: newTab(false, HOME); break;
@@ -474,8 +559,11 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                         case 4: findInPage(); break;
                         case 5: shareCurrent(); break;
                         case 6: copyCurrentUrl(); break;
-                        case 7: hibernateBackgroundTabs(); break;
-                        case 8: showPerformanceDetails(); break;
+                        case 7: toggleCompatibilityMode(); break;
+                        case 8: chooseAiPerformanceMode(); break;
+                        case 9: hibernateBackgroundTabs(); break;
+                        case 10: showNetworkDoctor(); break;
+                        case 11: showPerformanceDetails(); break;
                     }
                 }).show();
     }
@@ -492,6 +580,35 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                 : GeckoSessionSettings.VIEWPORT_MODE_MOBILE);
         tab.session.reload();
         persistState();
+    }
+
+    private void toggleCompatibilityMode() {
+        BrowserTab tab = currentTab();
+        if (tab == null || tab.session == null) return;
+        tab.compatibilityMode = !tab.compatibilityMode;
+        tab.session.getSettings().setUseTrackingProtection(!tab.compatibilityMode);
+        tab.sessionState = null;
+        persistStateNow();
+        toast(tab.compatibilityMode
+                ? "Compatibility mode enabled for this tab"
+                : "Tracking protection restored for this tab");
+        tab.session.reload();
+        updateHud();
+    }
+
+    private void chooseAiPerformanceMode() {
+        int current = BrowserPrefs.getAiProfile(this);
+        String[] modes = {"Auto · adaptive", "Max smoothness · aggressive", "Live response · never hide streaming"};
+        new AlertDialog.Builder(this)
+                .setTitle("AI performance mode")
+                .setSingleChoiceItems(modes, current, (dialog, which) -> {
+                    BrowserPrefs.setAiProfile(this, which);
+                    dialog.dismiss();
+                    updateHud();
+                    toast("AI performance: " + BrowserPrefs.aiProfileName(which));
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void findInPage() {
@@ -684,9 +801,15 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
         else if (value.contains(" ") || !value.contains(".")) {
             target = "https://www.google.com/search?q=" + Uri.encode(value);
         } else target = "https://" + value;
+
+        if (SitePolicy.shouldDefaultCompatibility(target) && !tab.compatibilityMode) {
+            tab.compatibilityMode = true;
+            tab.session.getSettings().setUseTrackingProtection(false);
+        }
         tab.url = target;
         address.setText(target);
         tab.session.loadUri(target);
+        persistState();
     }
 
     private void goBack() {
@@ -709,8 +832,62 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
         }
     }
 
+    private void showNetworkDoctor() {
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
+        BrowserTab tab = currentTab();
+        StringBuilder text = new StringBuilder();
+        text.append("Transport: ").append(network.transport).append("\n")
+                .append("Internet capability: ").append(network.connected ? "yes" : "no").append("\n")
+                .append("Android validated: ").append(network.validated ? "yes" : "no").append("\n")
+                .append("Metered: ").append(network.metered ? "yes" : "no").append("\n");
+        if (tab != null) {
+            text.append("\nCurrent site: ").append(SitePolicy.host(tab.url)).append("\n")
+                    .append("Compatibility mode: ").append(tab.compatibilityMode ? "on" : "off").append("\n")
+                    .append("Last load: ").append(tab.lastLoadSucceeded ? "ok" : "failed");
+            if (!tab.lastLoadSucceeded) {
+                text.append("\nError category/code: ")
+                        .append(tab.lastErrorCategory).append('/').append(tab.lastErrorCode);
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Network Doctor")
+                .setMessage(text.toString())
+                .setPositiveButton("Reload", (d, w) -> {
+                    BrowserTab current = currentTab();
+                    if (current != null && current.session != null) current.session.reload();
+                })
+                .setNeutralButton("Compatibility", (d, w) -> {
+                    BrowserTab current = currentTab();
+                    if (current != null && !current.compatibilityMode) toggleCompatibilityMode();
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private String buildNetworkErrorPage(String failedUri, WebRequestError error) {
+        NetworkDoctor.Snapshot net = NetworkDoctor.inspect(this);
+        String original = failedUri == null ? HOME : failedUri;
+        String html = "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
+                + "<style>body{background:#0a0d12;color:#eef3f8;font-family:sans-serif;padding:28px;line-height:1.5}"
+                + "a{color:#72a7ff}code{background:#171d27;padding:3px 6px;border-radius:6px}</style>"
+                + "<h2>EdgeFlow could not load this page</h2>"
+                + "<p>Network: <b>" + htmlEscape(net.shortLabel()) + "</b> · validated: " + net.validated + "</p>"
+                + "<p>Gecko error: <code>" + error.category + "/" + error.code + "</code></p>"
+                + "<p><a href='" + htmlEscape(original) + "'>Retry page</a></p>"
+                + "<p>If this is a login or AI site, open the menu and enable Compatibility mode.</p>";
+        return "data:text/html;charset=utf-8," + Uri.encode(html);
+    }
+
+    private String htmlEscape(String value) {
+        if (value == null) return "";
+        return value.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
     private void showPerformanceDetails() {
         PerformanceGuardian.Snapshot snap = guardian == null ? null : guardian.latest();
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
         BrowserTab tab = currentTab();
         StringBuilder text = new StringBuilder();
         if (snap != null) {
@@ -718,12 +895,15 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                     .append("Pressure: ").append(pressureName(snap.pressure)).append("\n")
                     .append("Thermal: ").append(snap.thermalStatus).append("\n");
         }
-        text.append("Tabs: ").append(tabs.size()).append("\n");
+        text.append("Network: ").append(network.shortLabel()).append("\n")
+                .append("AI profile: ").append(BrowserPrefs.aiProfileName(BrowserPrefs.getAiProfile(this))).append("\n")
+                .append("Tabs: ").append(tabs.size()).append("\n");
         int frozen = 0;
         for (BrowserTab t : tabs) if (t.hibernated) frozen++;
         text.append("Hibernated: ").append(frozen).append("\n");
         if (tab != null) {
-            text.append("ChatGPT turns: ").append(tab.turnCount).append("\n")
+            text.append("Compatibility: ").append(tab.compatibilityMode ? "on" : "off").append("\n")
+                    .append("ChatGPT turns: ").append(tab.turnCount).append("\n")
                     .append("Render pressure: ").append(tab.pain).append("\n")
                     .append("Stream Shield: ").append(tab.shielded ? "active" : "idle").append("\n")
                     .append("Last first paint: ").append(tab.lastFcpMs).append(" ms");
@@ -736,12 +916,16 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
         if (status == null || tabsButton == null) return;
         tabsButton.setText(String.valueOf(tabs.size()));
         PerformanceGuardian.Snapshot snap = guardian == null ? null : guardian.latest();
+        NetworkDoctor.Snapshot network = NetworkDoctor.inspect(this);
         BrowserTab tab = currentTab();
         String ram = snap == null || snap.availablePercent() < 0 ? "RAM ?" : "RAM " + snap.availablePercent() + "%";
         String pressure = snap == null ? "" : " · " + pressureName(snap.pressure);
+        String net = " · " + network.shortLabel();
+        String load = tab != null && tab.loading ? " · loading" : tab != null && !tab.lastLoadSucceeded ? " · net error" : "";
         String ai = tab != null && tab.shielded ? " · ⚡ Shield" : tab != null && tab.generating ? " · AI streaming" : "";
+        String compat = tab != null && tab.compatibilityMode ? " · compat" : "";
         String priv = tab != null && tab.privateMode ? " · Private" : "";
-        status.setText("Hyperion · " + ram + pressure + ai + priv);
+        status.setText("Atlas · " + ram + pressure + net + load + ai + compat + priv);
     }
 
     private String pressureName(int p) {
@@ -793,6 +977,13 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
     protected void onDestroy() {
         persistStateNow();
         if (guardian != null) guardian.stop();
+        if (activeContentPermissionResult != null) {
+            try {
+                activeContentPermissionResult.complete(
+                        GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY);
+            } catch (Throwable ignored) {}
+            activeContentPermissionResult = null;
+        }
         if (geckoView != null && geckoView.getSession() != null) geckoView.releaseSession();
         for (BrowserTab tab : tabs) {
             if (tab.session != null) {
