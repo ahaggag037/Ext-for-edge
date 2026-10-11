@@ -1,5 +1,6 @@
 package com.edgeflow.browser;
 
+import android.app.Application;
 import android.content.Context;
 import android.util.Log;
 import org.json.JSONObject;
@@ -69,6 +70,7 @@ final class EdgeFlowRuntime {
         settings.setFingerprintingProtectionPrivateBrowsing(true);
 
         Context app = context.getApplicationContext();
+        if (app instanceof Application) ForegroundActivityTracker.install((Application) app);
         runtime = GeckoRuntime.create(app, settings);
         runtime.setWebNotificationDelegate(new WebNotificationController(app));
         runtime.warmUp();
@@ -89,6 +91,16 @@ final class EdgeFlowRuntime {
 
     static void attachBridge(GeckoSession session, NativeBridge bridge) {
         if (session == null || bridge == null || runtime == null) return;
+
+        // Complete common browser prompts without replacing the activity's existing
+        // file-picker path. This keeps file uploads working while adding alert(),
+        // confirm(), prompt(), HTTP auth, before-unload, popup, redirect, repost and
+        // Web Share support to every EdgeFlow session.
+        GeckoSession.PromptDelegate existing = session.getPromptDelegate();
+        if (!(existing instanceof BrowserPromptDelegate)) {
+            session.setPromptDelegate(new BrowserPromptDelegate(existing));
+        }
+
         runtime.getWebExtensionController()
                 .ensureBuiltIn(EXTENSION_LOCATION, EXTENSION_ID)
                 .accept(extension -> {
