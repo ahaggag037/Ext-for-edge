@@ -1,13 +1,18 @@
 {
   "manifest_version": 2,
   "name": "EdgeFlow Core",
-  "version": "0.1.0",
-  "description": "Built-in performance engine for EdgeFlow Browser.",
+  "version": "0.2.0",
+  "description": "Built-in adaptive performance engine for EdgeFlow Browser.",
   "browser_specific_settings": {
     "gecko": {
       "id": "edgeflow-core@edgeflow.local"
     }
   },
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons"
+  ],
   "content_scripts": [
     {
       "matches": [
