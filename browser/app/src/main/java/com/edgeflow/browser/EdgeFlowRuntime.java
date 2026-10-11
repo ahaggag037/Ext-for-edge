@@ -36,7 +36,11 @@ final class EdgeFlowRuntime {
                 .cookieBehaviorPrivateMode(ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS)
                 .enhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.DEFAULT)
                 .enhancedTrackingProtectionCategory(ContentBlocking.EtpCategory.STANDARD)
+                .contentBlockingDatabase(true)
                 .cookiePurging(true)
+                .emailTrackerBlockingPrivateMode(true)
+                .bounceTrackingProtectionMode(
+                        ContentBlocking.BounceTrackingProtectionMode.BOUNCE_TRACKING_PROTECTION_MODE_ENABLED)
                 .queryParameterStrippingEnabled(true)
                 .queryParameterStrippingPrivateBrowsingEnabled(true)
                 .build();
@@ -47,6 +51,8 @@ final class EdgeFlowRuntime {
                 .fissionEnabled(true)
                 .lowMemoryDetection(true)
                 .forceUserScalableEnabled(true)
+                .inputAutoZoomEnabled(true)
+                .allowInsecureConnections(GeckoRuntimeSettings.HTTPS_ONLY_PRIVATE)
                 .webManifest(true)
                 .globalPrivacyControlEnabled(true)
                 .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
