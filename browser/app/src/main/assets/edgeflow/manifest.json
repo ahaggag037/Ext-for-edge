@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "EdgeFlow Core",
-  "version": "0.2.0",
-  "description": "Built-in adaptive performance engine for EdgeFlow Browser.",
+  "version": "0.3.0",
+  "description": "Built-in adaptive performance and compatibility engine for EdgeFlow Browser Atlas.",
   "browser_specific_settings": {
     "gecko": {
       "id": "edgeflow-core@edgeflow.local"
