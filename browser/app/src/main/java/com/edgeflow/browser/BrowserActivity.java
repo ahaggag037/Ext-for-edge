@@ -554,7 +554,7 @@ public final class BrowserActivity extends Activity implements PerformanceGuardi
                 updateHud();
                 persistState();
             }, 250L);
-        }, error -> null);
+        }, error -> {});
     }
 
     private void recoverTab(BrowserTab tab) {
