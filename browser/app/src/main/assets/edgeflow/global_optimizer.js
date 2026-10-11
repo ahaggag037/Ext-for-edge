@@ -14,8 +14,10 @@
     dataSaver: false,
     powerSave: false,
     observer: null,
+    observerActive: false,
     mediaObserver: null,
     policyTimer: 0,
+    relaxTimer: 0,
     lastPolicyAt: 0,
     touched: new WeakSet()
   };
@@ -87,7 +89,6 @@
     if (el.matches?.('img')) tuneImage(el);
     else if (el.matches?.('iframe')) tuneFrame(el);
     else if (el.matches?.('video,audio')) tuneMedia(el);
-
     el.querySelectorAll?.('img').forEach(tuneImage);
     el.querySelectorAll?.('iframe').forEach(tuneFrame);
     el.querySelectorAll?.('video,audio').forEach(tuneMedia);
@@ -97,28 +98,55 @@
     document.querySelectorAll('video,audio').forEach(retuneMedia);
   }
 
-  function installObservers() {
-    if ('IntersectionObserver' in window) {
-      STATE.mediaObserver = new IntersectionObserver(entries => {
-        if (!STATE.dataSaver && STATE.pressure < 2) return;
-        for (const entry of entries) {
-          const media = entry.target;
-          if (!(media instanceof HTMLMediaElement)) continue;
-          // Never stop audible playback. Only suppress muted, controls-free autoplay.
-          if (!entry.isIntersecting && media.muted && !media.paused && !media.controls) {
-            try { media.pause(); } catch (_) {}
-          }
+  function ensureMediaObserver() {
+    if (STATE.mediaObserver || !('IntersectionObserver' in window)) return;
+    STATE.mediaObserver = new IntersectionObserver(entries => {
+      if (!STATE.dataSaver && STATE.pressure < 2) return;
+      for (const entry of entries) {
+        const media = entry.target;
+        if (!(media instanceof HTMLMediaElement)) continue;
+        // Never stop audible playback. Only suppress muted, controls-free autoplay.
+        if (!entry.isIntersecting && media.muted && !media.paused && !media.controls) {
+          try { media.pause(); } catch (_) {}
         }
-      }, { rootMargin: '200% 0px 200% 0px', threshold: 0.01 });
-    }
-
-    const root = document.documentElement;
-    STATE.observer = new MutationObserver(records => {
-      for (const record of records) {
-        for (const node of record.addedNodes || []) tuneNode(node);
       }
-    });
-    STATE.observer.observe(root, { childList: true, subtree: true });
+    }, { rootMargin: '200% 0px 200% 0px', threshold: 0.01 });
+  }
+
+  function startDomObserver(burstMs = 18000) {
+    if (document.hidden || STATE.observerActive) return;
+    if (!STATE.observer) {
+      STATE.observer = new MutationObserver(records => {
+        for (const record of records) {
+          for (const node of record.addedNodes || []) tuneNode(node);
+        }
+      });
+    }
+    STATE.observer.observe(document.documentElement, { childList: true, subtree: true });
+    STATE.observerActive = true;
+
+    clearTimeout(STATE.relaxTimer);
+    STATE.relaxTimer = setTimeout(() => {
+      // Once hydration settles, a healthy page should not pay a permanent observer
+      // tax. Keep observing only while pressure/data-saver policy makes it worthwhile.
+      if (!STATE.dataSaver && STATE.pressure === 0 && !STATE.powerSave) stopDomObserver();
+    }, burstMs);
+  }
+
+  function stopDomObserver() {
+    if (!STATE.observerActive || !STATE.observer) return;
+    STATE.observer.disconnect();
+    STATE.observerActive = false;
+  }
+
+  function reconcileObserverPolicy() {
+    if (document.hidden) {
+      stopDomObserver();
+      return;
+    }
+    if (STATE.dataSaver || STATE.pressure >= 1 || STATE.powerSave) {
+      startDomObserver(30000);
+    }
   }
 
   function applyPolicy(policy) {
@@ -130,6 +158,7 @@
     STATE.powerSave = !!policy.powerSave;
     applyClasses();
     retuneKnownMedia();
+    reconcileObserverPolicy();
   }
 
   async function refreshPolicy(force = false) {
@@ -158,8 +187,9 @@
 
   function start() {
     ensureStyle();
+    ensureMediaObserver();
     tuneNode(document.documentElement);
-    installObservers();
+    startDomObserver();
     refreshPolicy(true);
     schedulePolicyLoop();
   }
@@ -171,8 +201,18 @@
   }
 
   document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopDomObserver();
+    else {
+      tuneNode(document.documentElement);
+      startDomObserver(10000);
+    }
     refreshPolicy(true);
     schedulePolicyLoop();
   }, { passive: true });
-  window.addEventListener('pageshow', () => refreshPolicy(true), { passive: true });
+
+  window.addEventListener('pageshow', () => {
+    tuneNode(document.documentElement);
+    startDomObserver(10000);
+    refreshPolicy(true);
+  }, { passive: true });
 })();
