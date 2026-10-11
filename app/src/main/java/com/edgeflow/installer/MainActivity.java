@@ -4,7 +4,6 @@ import android.Manifest;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.app.admin.DevicePolicyManager;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -13,14 +12,13 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.text.TextUtils;
 import android.view.View;
+import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.view.accessibility.AccessibilityManager;
 import java.util.List;
 
 public class MainActivity extends Activity {
@@ -38,7 +36,8 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refresh();
-        if (InstallSession.active(this) && isAccessibilityEnabled() && selectedEdge != null) {
+        if (InstallSession.active(this) && isAccessibilityEnabled() && selectedEdge != null
+                && EdgeTargets.supportsPrivateCrx(selectedEdge)) {
             launchEdge(selectedEdge.packageName);
         }
     }
@@ -54,7 +53,7 @@ public class MainActivity extends Activity {
         TextView title = text("EdgeFlow Installer", 28, Color.WHITE);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         box.addView(title);
-        TextView subtitle = text("One-tap assisted installation for EdgeFlow on Microsoft Edge Android", 15, Color.rgb(185, 195, 210));
+        TextView subtitle = text("Assisted installation for EdgeFlow on Microsoft Edge Android", 15, Color.rgb(185, 195, 210));
         subtitle.setPadding(0, dp(6), 0, dp(18));
         box.addView(subtitle);
 
@@ -71,6 +70,14 @@ public class MainActivity extends Activity {
         install.setOnClickListener(v -> startInstall());
         box.addView(install, matchWrap());
 
+        Button canary = button("Install / open Edge Canary");
+        canary.setOnClickListener(v -> openChannelOrStore(EdgeTargets.CANARY));
+        box.addView(canary, matchWrap());
+
+        Button beta = button("Install / open Edge Beta");
+        beta.setOnClickListener(v -> openChannelOrStore(EdgeTargets.BETA));
+        box.addView(beta, matchWrap());
+
         Button assistant = button("Enable / check Install Assistant");
         assistant.setOnClickListener(v -> openAccessibilitySettings());
         box.addView(assistant, matchWrap());
@@ -79,10 +86,16 @@ public class MainActivity extends Activity {
         copy.setOnClickListener(v -> exportOnly());
         box.addView(copy, matchWrap());
 
-        Button open = button("Open best Edge channel");
+        Button open = button("Open supported Edge channel");
         open.setOnClickListener(v -> {
-            if (selectedEdge == null) Toast.makeText(this, "No supported Edge channel detected.", Toast.LENGTH_LONG).show();
-            else launchEdge(selectedEdge.packageName);
+            EdgeTargets.InstalledEdge supported = EdgeTargets.bestPrivateCrxTarget(this);
+            if (supported == null) {
+                Toast.makeText(this,
+                        "Edge Stable does not expose private CRX sideload on Android. Install Canary or Beta first.",
+                        Toast.LENGTH_LONG).show();
+            } else {
+                launchEdge(supported.packageName);
+            }
         });
         box.addView(open, matchWrap());
 
@@ -91,11 +104,13 @@ public class MainActivity extends Activity {
         box.addView(managed, matchWrap());
 
         TextView note = text(
-                "How it works:\n\n" +
+                "Important:\n\n" +
+                "• Edge Stable on Android only exposes Microsoft's curated extension catalog; the hidden private-CRX sideload flow is not available there.\n" +
+                "• Edge Canary or Edge Beta is required for the current private CRX route.\n" +
                 "• The app verifies the bundled EdgeFlow CRX by SHA-256 before exporting it.\n" +
-                "• On a normal personal phone, Android/Edge still require a one-time Accessibility permission and Edge's own install confirmation.\n" +
+                "• On a normal personal phone, Android/Edge still require a one-time Accessibility permission and Edge's own final install confirmation.\n" +
                 "• The assistant only acts during an explicit install session, only in Edge/file-picker windows, and expires automatically after 8 minutes.\n" +
-                "• Managed devices can use Edge policy deployment; that route requires a real MDM/device-owner configuration and a hosted update endpoint.\n\n" +
+                "• Managed devices can use Edge policy deployment; that route requires real Device/Profile Owner or MDM authority and a hosted update endpoint.\n\n" +
                 "Extension ID: oeehabgdmlomabhpcbbdfjlehpbnfljp\nVersion: 3.1.0",
                 13, Color.rgb(160, 171, 187));
         note.setPadding(0, dp(22), 0, 0);
@@ -105,18 +120,27 @@ public class MainActivity extends Activity {
 
     private void refresh() {
         List<EdgeTargets.InstalledEdge> edges = EdgeTargets.installed(this);
-        selectedEdge = edges.isEmpty() ? null : edges.get(0);
+        selectedEdge = EdgeTargets.bestPrivateCrxTarget(this);
         StringBuilder sb = new StringBuilder();
+
         if (edges.isEmpty()) {
             status.setText("No Microsoft Edge channel detected");
             status.setTextColor(Color.rgb(255, 170, 80));
-            sb.append("Install Edge Canary or Beta for the most reliable private-CRX route.");
+            sb.append("Install Edge Canary or Edge Beta to use the private CRX route.");
+        } else if (selectedEdge == null) {
+            status.setText("Edge detected, but private CRX sideload is unavailable");
+            status.setTextColor(Color.rgb(255, 190, 90));
+            for (EdgeTargets.InstalledEdge edge : edges) {
+                sb.append(edge.label).append(" ").append(edge.versionName)
+                        .append(" — ").append(edge.packageName).append('\n');
+            }
+            sb.append("\nYour screenshots confirm that Stable's Developer options do not contain 'Extension install by crx'.\n");
+            sb.append("Install Edge Canary or Beta, then return here. The installer will detect it automatically.");
         } else {
-            EdgeTargets.InstalledEdge e = selectedEdge;
-            boolean supportedPolicy = EdgeTargets.majorAtLeast(e.versionName, 149);
-            status.setText("Ready: " + e.label + " " + e.versionName);
+            boolean supportedPolicy = EdgeTargets.majorAtLeast(selectedEdge.versionName, 149);
+            status.setText("Ready: " + selectedEdge.label + " " + selectedEdge.versionName);
             status.setTextColor(Color.rgb(125, 230, 170));
-            sb.append("Preferred target: ").append(e.packageName).append('\n');
+            sb.append("Private CRX target: ").append(selectedEdge.packageName).append('\n');
             sb.append("Edge 149+ policy capability: ").append(supportedPolicy ? "available by version" : "not available by version").append('\n');
             sb.append("Install Assistant: ").append(isAccessibilityEnabled() ? "enabled" : "not enabled").append('\n');
             sb.append("Session: ").append(InstallSession.state(this));
@@ -125,8 +149,12 @@ public class MainActivity extends Activity {
     }
 
     private void startInstall() {
+        selectedEdge = EdgeTargets.bestPrivateCrxTarget(this);
         if (selectedEdge == null) {
-            Toast.makeText(this, "Install Edge Canary or Beta first, then return here.", Toast.LENGTH_LONG).show();
+            Toast.makeText(this,
+                    "Private CRX sideload is unavailable in Edge Stable. Opening Edge Canary install page.",
+                    Toast.LENGTH_LONG).show();
+            openChannelOrStore(EdgeTargets.CANARY);
             return;
         }
         if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -145,6 +173,25 @@ public class MainActivity extends Activity {
             refresh();
         } catch (Exception e) {
             Toast.makeText(this, "Could not prepare EdgeFlow: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void openChannelOrStore(String packageName) {
+        Intent launch = getPackageManager().getLaunchIntentForPackage(packageName);
+        if (launch != null) {
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(launch);
+            return;
+        }
+        try {
+            Intent market = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + packageName));
+            market.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(market);
+        } catch (Exception ignored) {
+            Intent web = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://play.google.com/store/apps/details?id=" + packageName));
+            web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(web);
         }
     }
 
@@ -190,8 +237,8 @@ public class MainActivity extends Activity {
         DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
         boolean owner = dpm != null && (dpm.isDeviceOwnerApp(getPackageName()) || dpm.isProfileOwnerApp(getPackageName()));
         String msg = owner
-                ? "This app is a Device/Profile Owner. The silent Edge policy route can be activated once a valid EdgeFlow update endpoint is configured."
-                : "This is a normal personal-device install. Android does not allow an ordinary APK to write Edge managed policies silently. The assisted CRX route is the correct path here.";
+                ? "This app is a Device/Profile Owner. Silent Edge policy deployment can be activated after a valid EdgeFlow update endpoint is configured."
+                : "This is a normal personal-device install. Android does not allow an ordinary APK to write Edge managed policies silently. Canary/Beta assisted CRX installation is the supported project route.";
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
     }
 
