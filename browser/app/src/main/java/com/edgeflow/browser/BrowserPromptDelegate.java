@@ -13,9 +13,8 @@ import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoSession;
 
 /**
- * Completes the common web prompt surface that a real browser is expected to
- * provide. File selection is delegated back to the activity-specific delegate
- * so Atlas/Aegis keep their existing file-picker flow.
+ * Common web prompt surface for EdgeFlow. File selection is still delegated to
+ * the activity so file uploads keep their existing Android document-picker path.
  */
 final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
     private final GeckoSession.PromptDelegate fallback;
@@ -24,14 +23,12 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         this.fallback = fallback;
     }
 
-    @Override public GeckoResult<PromptResponse> onFilePrompt(
-            GeckoSession session, FilePrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onFilePrompt(GeckoSession session, FilePrompt prompt) {
         GeckoResult<PromptResponse> delegated = fallback == null ? null : fallback.onFilePrompt(session, prompt);
         return delegated != null ? delegated : GeckoResult.fromValue(prompt.dismiss());
     }
 
-    @Override public GeckoResult<PromptResponse> onAlertPrompt(
-            GeckoSession session, AlertPrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onAlertPrompt(GeckoSession session, AlertPrompt prompt) {
         Activity activity = ForegroundActivityTracker.current();
         if (activity == null) return delegateOrDismissAlert(session, prompt);
         GeckoResult<PromptResponse> result = new GeckoResult<>();
@@ -44,8 +41,7 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         return result;
     }
 
-    @Override public GeckoResult<PromptResponse> onButtonPrompt(
-            GeckoSession session, ButtonPrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onButtonPrompt(GeckoSession session, ButtonPrompt prompt) {
         Activity activity = ForegroundActivityTracker.current();
         if (activity == null) {
             GeckoResult<PromptResponse> delegated = fallback == null ? null : fallback.onButtonPrompt(session, prompt);
@@ -62,8 +58,7 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         return result;
     }
 
-    @Override public GeckoResult<PromptResponse> onTextPrompt(
-            GeckoSession session, TextPrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onTextPrompt(GeckoSession session, TextPrompt prompt) {
         Activity activity = ForegroundActivityTracker.current();
         if (activity == null) {
             GeckoResult<PromptResponse> delegated = fallback == null ? null : fallback.onTextPrompt(session, prompt);
@@ -84,8 +79,7 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         return result;
     }
 
-    @Override public GeckoResult<PromptResponse> onAuthPrompt(
-            GeckoSession session, AuthPrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onAuthPrompt(GeckoSession session, AuthPrompt prompt) {
         Activity activity = ForegroundActivityTracker.current();
         if (activity == null) {
             GeckoResult<PromptResponse> delegated = fallback == null ? null : fallback.onAuthPrompt(session, prompt);
@@ -117,22 +111,21 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         return result;
     }
 
-    @Override public GeckoResult<PromptResponse> onChoicePrompt(
-            GeckoSession session, ChoicePrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onChoicePrompt(GeckoSession session, ChoicePrompt prompt) {
         Activity activity = ForegroundActivityTracker.current();
         if (activity == null) {
             GeckoResult<PromptResponse> delegated = fallback == null ? null : fallback.onChoicePrompt(session, prompt);
             return delegated != null ? delegated : GeckoResult.fromValue(prompt.dismiss());
         }
-
         List<ChoicePrompt.Choice> choices = new ArrayList<>();
         flattenChoices(prompt.choices, choices);
         if (choices.isEmpty()) return GeckoResult.fromValue(prompt.dismiss());
         String[] labels = new String[choices.size()];
         for (int i = 0; i < choices.size(); i++) {
-            ChoicePrompt.Choice choice = choices.get(i);
-            labels[i] = (choice.disabled ? "⛔ " : "") + choice.label;
+            ChoicePrompt.Choice c = choices.get(i);
+            labels[i] = (c.disabled ? "⛔ " : "") + c.label;
         }
+
         GeckoResult<PromptResponse> result = new GeckoResult<>();
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
                 .setTitle(textOr(prompt.title, textOr(prompt.message, "Choose")))
@@ -140,7 +133,7 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
 
         if (prompt.type == ChoicePrompt.Type.MULTIPLE) {
             boolean[] checked = new boolean[choices.size()];
-            for (int i = 0; i < choices.size(); i++) checked[i] = choices.get(i).selected;
+            for (int i = 0; i < choices.size(); i++) checked[i] = choices.get(i).selected && !choices.get(i).disabled;
             builder.setMultiChoiceItems(labels, checked, (d, which, value) -> {
                 if (which < 0 || which >= choices.size()) return;
                 if (choices.get(which).disabled) {
@@ -157,7 +150,9 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
             });
         } else if (prompt.type == ChoicePrompt.Type.SINGLE) {
             int initial = -1;
-            for (int i = 0; i < choices.size(); i++) if (choices.get(i).selected && !choices.get(i).disabled) { initial = i; break; }
+            for (int i = 0; i < choices.size(); i++) {
+                if (choices.get(i).selected && !choices.get(i).disabled) { initial = i; break; }
+            }
             final int[] selected = {initial};
             builder.setSingleChoiceItems(labels, initial, (d, which) -> {
                 if (which >= 0 && which < choices.size() && !choices.get(which).disabled) selected[0] = which;
@@ -177,28 +172,27 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         return result;
     }
 
-    @Override public GeckoResult<PromptResponse> onColorPrompt(
-            GeckoSession session, ColorPrompt prompt) {
-        return textValuePrompt(session, prompt.title, "Color (#RRGGBB)", prompt.defaultValue,
+    @Override public GeckoResult<PromptResponse> onColorPrompt(GeckoSession session, ColorPrompt prompt) {
+        return textValuePrompt(prompt.title, "Color (#RRGGBB)", prompt.defaultValue,
                 value -> prompt.confirm(value),
+                () -> prompt.dismiss(),
                 fallback == null ? null : fallback.onColorPrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onDateTimePrompt(
-            GeckoSession session, DateTimePrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onDateTimePrompt(GeckoSession session, DateTimePrompt prompt) {
         String hint;
         if (prompt.type == DateTimePrompt.Type.DATE) hint = "Date (YYYY-MM-DD)";
         else if (prompt.type == DateTimePrompt.Type.TIME) hint = "Time (HH:MM)";
         else if (prompt.type == DateTimePrompt.Type.MONTH) hint = "Month (YYYY-MM)";
         else if (prompt.type == DateTimePrompt.Type.WEEK) hint = "Week (YYYY-Www)";
         else hint = "Date and time (YYYY-MM-DDTHH:MM)";
-        return textValuePrompt(session, prompt.title, hint, prompt.defaultValue,
+        return textValuePrompt(prompt.title, hint, prompt.defaultValue,
                 value -> prompt.confirm(value),
+                () -> prompt.dismiss(),
                 fallback == null ? null : fallback.onDateTimePrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onFolderUploadPrompt(
-            GeckoSession session, FolderUploadPrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onFolderUploadPrompt(GeckoSession session, FolderUploadPrompt prompt) {
         String directory = prompt.directoryName == null || prompt.directoryName.isEmpty()
                 ? "this folder" : prompt.directoryName;
         return confirmAllowOrDeny("Upload folder?",
@@ -208,45 +202,32 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
                 fallback == null ? null : fallback.onFolderUploadPrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onBeforeUnloadPrompt(
-            GeckoSession session, BeforeUnloadPrompt prompt) {
-        return confirmAllowOrDeny("Leave this page?",
-                "Changes you made may not be saved.",
-                () -> prompt.confirm(AllowOrDeny.ALLOW),
-                () -> prompt.confirm(AllowOrDeny.DENY),
+    @Override public GeckoResult<PromptResponse> onBeforeUnloadPrompt(GeckoSession session, BeforeUnloadPrompt prompt) {
+        return confirmAllowOrDeny("Leave this page?", "Changes you made may not be saved.",
+                () -> prompt.confirm(AllowOrDeny.ALLOW), () -> prompt.confirm(AllowOrDeny.DENY),
                 fallback == null ? null : fallback.onBeforeUnloadPrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onRepostConfirmPrompt(
-            GeckoSession session, RepostConfirmPrompt prompt) {
-        return confirmAllowOrDeny("Resend form data?",
-                "Reloading this page needs to resend previously submitted data.",
-                () -> prompt.confirm(AllowOrDeny.ALLOW),
-                () -> prompt.confirm(AllowOrDeny.DENY),
+    @Override public GeckoResult<PromptResponse> onRepostConfirmPrompt(GeckoSession session, RepostConfirmPrompt prompt) {
+        return confirmAllowOrDeny("Resend form data?", "Reloading this page needs to resend previously submitted data.",
+                () -> prompt.confirm(AllowOrDeny.ALLOW), () -> prompt.confirm(AllowOrDeny.DENY),
                 fallback == null ? null : fallback.onRepostConfirmPrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onPopupPrompt(
-            GeckoSession session, PopupPrompt prompt) {
-        String message = prompt.targetUri == null ? "This site wants to open a popup."
-                : "Open popup?\n" + prompt.targetUri;
+    @Override public GeckoResult<PromptResponse> onPopupPrompt(GeckoSession session, PopupPrompt prompt) {
+        String message = prompt.targetUri == null ? "This site wants to open a popup." : "Open popup?\n" + prompt.targetUri;
         return confirmAllowOrDeny("Popup request", message,
-                () -> prompt.confirm(AllowOrDeny.ALLOW),
-                () -> prompt.confirm(AllowOrDeny.DENY),
+                () -> prompt.confirm(AllowOrDeny.ALLOW), () -> prompt.confirm(AllowOrDeny.DENY),
                 fallback == null ? null : fallback.onPopupPrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onRedirectPrompt(
-            GeckoSession session, RedirectPrompt prompt) {
-        return confirmAllowOrDeny("Redirect request",
-                "A third-party frame wants to redirect this page.",
-                () -> prompt.confirm(AllowOrDeny.ALLOW),
-                () -> prompt.confirm(AllowOrDeny.DENY),
+    @Override public GeckoResult<PromptResponse> onRedirectPrompt(GeckoSession session, RedirectPrompt prompt) {
+        return confirmAllowOrDeny("Redirect request", "A third-party frame wants to redirect this page.",
+                () -> prompt.confirm(AllowOrDeny.ALLOW), () -> prompt.confirm(AllowOrDeny.DENY),
                 fallback == null ? null : fallback.onRedirectPrompt(session, prompt));
     }
 
-    @Override public GeckoResult<PromptResponse> onSharePrompt(
-            GeckoSession session, SharePrompt prompt) {
+    @Override public GeckoResult<PromptResponse> onSharePrompt(GeckoSession session, SharePrompt prompt) {
         Activity activity = ForegroundActivityTracker.current();
         if (activity == null) {
             GeckoResult<PromptResponse> delegated = fallback == null ? null : fallback.onSharePrompt(session, prompt);
@@ -270,11 +251,10 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
         }
     }
 
-    private GeckoResult<PromptResponse> textValuePrompt(GeckoSession session, String title,
-            String hint, String defaultValue, ValueResponseFactory confirm,
-            GeckoResult<PromptResponse> delegated) {
+    private GeckoResult<PromptResponse> textValuePrompt(String title, String hint, String defaultValue,
+            ValueResponseFactory confirm, ResponseFactory cancel, GeckoResult<PromptResponse> delegated) {
         Activity activity = ForegroundActivityTracker.current();
-        if (activity == null) return delegated != null ? delegated : GeckoResult.fromValue(null);
+        if (activity == null) return delegated != null ? delegated : GeckoResult.fromValue(cancel.create());
         GeckoResult<PromptResponse> result = new GeckoResult<>();
         EditText input = new EditText(activity);
         input.setSingleLine(true);
@@ -285,11 +265,10 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
                 .setView(input)
                 .setPositiveButton("OK", (d, w) -> {
                     String value = input.getText().toString().trim();
-                    if (value.isEmpty()) complete(result, null);
-                    else complete(result, confirm.create(value));
+                    complete(result, value.isEmpty() ? cancel.create() : confirm.create(value));
                 })
-                .setNegativeButton("Cancel", (d, w) -> complete(result, null))
-                .setOnCancelListener(d -> complete(result, null))
+                .setNegativeButton("Cancel", (d, w) -> complete(result, cancel.create()))
+                .setOnCancelListener(d -> complete(result, cancel.create()))
                 .show();
         return result;
     }
@@ -324,7 +303,6 @@ final class BrowserPromptDelegate implements GeckoSession.PromptDelegate {
     }
 
     private static void complete(GeckoResult<PromptResponse> result, PromptResponse response) {
-        if (response == null) return;
         try { result.complete(response); } catch (Throwable ignored) {}
     }
 
