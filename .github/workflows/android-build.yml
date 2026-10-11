@@ -17,16 +17,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android platform
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Prepare preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(command -v sdkmanager || true)"
+          fi
+          test -n "$SDKMANAGER"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          test -f "$SDK_ROOT/platforms/android-35/android.jar"
+          test -x "$SDK_ROOT/build-tools/35.0.0/aapt2"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -36,6 +47,7 @@ jobs:
       - name: Verify embedded EdgeFlow CRX
         shell: bash
         run: |
+          set -euo pipefail
           cat app/src/main/assets/crx-parts/part-*.b64 | base64 -d > /tmp/edgeflow.crx
           echo "d1a20e525e51f5bfaf632956618a588f312d6c420ddce7279ed4b057ae370444  /tmp/edgeflow.crx" | sha256sum -c -
           test "$(head -c 4 /tmp/edgeflow.crx)" = "Cr24"
@@ -46,6 +58,7 @@ jobs:
       - name: Verify APK
         shell: bash
         run: |
+          set -euo pipefail
           APK=$(find app/build/outputs/apk/debug -name '*.apk' -type f | head -n1)
           test -n "$APK"
           test -s "$APK"
