@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "EdgeFlow Core",
-  "version": "0.3.0",
-  "description": "Built-in adaptive performance and compatibility engine for EdgeFlow Browser Atlas.",
+  "version": "0.4.0",
+  "description": "Built-in adaptive browser-wide performance engine for EdgeFlow Browser Aegis.",
   "browser_specific_settings": {
     "gecko": {
       "id": "edgeflow-core@edgeflow.local"
@@ -14,6 +14,14 @@
     "geckoViewAddons"
   ],
   "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": ["global_optimizer.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://chatgpt.com/*",
