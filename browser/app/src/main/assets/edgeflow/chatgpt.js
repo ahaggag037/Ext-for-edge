@@ -10,8 +10,10 @@
     shielded: false,
     shieldTarget: null,
     showLiveForCurrentRun: false,
-    timer: 0,
+    windowTimer: 0,
+    loopTimer: 0,
     observer: null,
+    observedRoot: null,
     badge: null,
     turns: [],
     lastTick: performance.now(),
@@ -25,8 +27,16 @@
     'article[data-turn]',
     '[data-turn-key]'
   ].join(',');
+  const OUTER_TURN_SELECTOR = 'article[data-turn], [data-turn-key]';
+  const STOP_SELECTOR = [
+    'button[data-testid="stop-button"]',
+    'button[aria-label*="Stop"]',
+    'button[aria-label*="stop"]',
+    'button[aria-label*="إيقاف"]'
+  ].join(',');
 
   function addStyles() {
+    if (document.getElementById('edgeflow-core-style')) return;
     const style = document.createElement('style');
     style.id = 'edgeflow-core-style';
     style.textContent = `
@@ -49,8 +59,10 @@
         backdrop-filter: none !important;
       }
       html.edgeflow-core .ef-stream-shield {
+        content-visibility: hidden !important;
         contain: strict !important;
-        min-height: 140px !important;
+        contain-intrinsic-size: var(--ef-shield-h, 180px) !important;
+        overflow-anchor: none !important;
       }
       html.edgeflow-core .ef-stream-shield > * { visibility: hidden !important; }
       #edgeflow-shield-badge {
@@ -82,42 +94,60 @@
   }
 
   function isGenerating() {
-    return !!document.querySelector([
-      'button[data-testid="stop-button"]',
-      'button[aria-label*="Stop"]',
-      'button[aria-label*="stop"]',
-      'button[aria-label*="إيقاف"]'
-    ].join(','));
+    return !document.hidden && !!document.querySelector(STOP_SELECTOR);
+  }
+
+  function normalizeTurn(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    if (node.matches?.(OUTER_TURN_SELECTOR)) return node;
+    const outer = node.closest?.(OUTER_TURN_SELECTOR);
+    if (outer) return outer;
+    if (node.matches?.('[data-message-author-role]')) return node;
+    return node.closest?.('[data-message-author-role]') || null;
   }
 
   function roleOf(node) {
-    if (!node || node.nodeType !== 1) return '';
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return '';
     const explicit = node.getAttribute('data-message-author-role');
     if (explicit) return explicit;
     const turn = node.getAttribute('data-turn');
-    if (turn) return turn;
+    if (turn === 'assistant' || turn === 'user') return turn;
     const roleChild = node.querySelector?.('[data-message-author-role]');
     return roleChild?.getAttribute('data-message-author-role') || '';
   }
 
-  function addTurn(node) {
-    if (!node || node.nodeType !== 1 || !node.matches?.(TURN_SELECTOR)) return;
-    if (!STATE.turns.includes(node)) STATE.turns.push(node);
+  function addTurn(candidate) {
+    const node = normalizeTurn(candidate);
+    if (!node || STATE.turns.includes(node)) return false;
+    STATE.turns.push(node);
+    return true;
   }
 
   function scanAdded(node) {
-    if (!node || node.nodeType !== 1) return;
-    addTurn(node);
-    node.querySelectorAll?.(TURN_SELECTOR).forEach(addTurn);
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+    let changed = false;
+    if (node.matches?.(TURN_SELECTOR)) changed = addTurn(node) || changed;
+    node.querySelectorAll?.(TURN_SELECTOR).forEach(candidate => {
+      changed = addTurn(candidate) || changed;
+    });
+    return changed;
   }
 
-  function compactTurns() {
-    if (STATE.turns.length < 2) return;
+  function compactTurns(sort = false) {
+    const before = STATE.turns.length;
     STATE.turns = STATE.turns.filter(node => node && node.isConnected);
+    if (sort && STATE.turns.length > 1) {
+      STATE.turns.sort((a, b) => {
+        if (a === b) return 0;
+        const relation = a.compareDocumentPosition(b);
+        return relation & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+      });
+    }
+    return before !== STATE.turns.length;
   }
 
   function currentAssistantTurn() {
-    compactTurns();
+    compactTurns(false);
     for (let i = STATE.turns.length - 1; i >= 0; i--) {
       if (roleOf(STATE.turns[i]) === 'assistant') return STATE.turns[i];
     }
@@ -125,7 +155,7 @@
   }
 
   function applyWindowing() {
-    compactTurns();
+    compactTurns(true);
     const list = STATE.turns;
     if (!list.length) return;
     const cutoff = Math.max(0, list.length - Math.max(1, STATE.coldKeep));
@@ -147,18 +177,24 @@
     const badge = document.createElement('div');
     badge.id = 'edgeflow-shield-badge';
     const text = document.createElement('div');
-    text.textContent = '⚡ EdgeFlow is buffering live paint to keep ChatGPT responsive.';
+    text.textContent = '⚡ EdgeFlow paused live rendering to keep ChatGPT responsive.';
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = 'Show live response';
     button.addEventListener('click', () => {
       STATE.showLiveForCurrentRun = true;
       removeShield();
-      sendTelemetry(true);
+      sendTelemetry(true, true);
     });
     badge.append(text, button);
     (document.body || document.documentElement).appendChild(badge);
     STATE.badge = badge;
+  }
+
+  function clearShieldNode(node) {
+    if (!node) return;
+    node.classList.remove('ef-stream-shield');
+    node.style.removeProperty('--ef-shield-h');
   }
 
   function hideBadge() {
@@ -167,11 +203,16 @@
   }
 
   function applyShield() {
-    if (STATE.showLiveForCurrentRun) return;
+    if (STATE.showLiveForCurrentRun || document.hidden) return;
     const target = currentAssistantTurn();
     if (!target) return;
+
     if (STATE.shieldTarget && STATE.shieldTarget !== target) {
-      STATE.shieldTarget.classList.remove('ef-stream-shield');
+      clearShieldNode(STATE.shieldTarget);
+    }
+    if (STATE.shieldTarget !== target || !target.classList.contains('ef-stream-shield')) {
+      const measured = Math.max(100, Math.ceil(target.getBoundingClientRect().height || 0));
+      target.style.setProperty('--ef-shield-h', measured + 'px');
     }
     target.classList.remove('ef-cold');
     target.classList.add('ef-hot', 'ef-stream-shield');
@@ -181,8 +222,7 @@
   }
 
   function removeShield() {
-    if (STATE.shieldTarget) STATE.shieldTarget.classList.remove('ef-stream-shield');
-    document.querySelectorAll('.ef-stream-shield').forEach(node => node.classList.remove('ef-stream-shield'));
+    clearShieldNode(STATE.shieldTarget);
     STATE.shieldTarget = null;
     STATE.shielded = false;
     hideBadge();
@@ -196,25 +236,37 @@
 
   function applyNativePolicy(policy) {
     if (!policy || typeof policy !== 'object') return;
+    const oldKeep = STATE.coldKeep;
+    const oldThreshold = STATE.shieldThreshold;
+    const oldPressure = STATE.pressure;
+    const oldThermal = STATE.thermal;
+
     const keep = Number(policy.coldKeep);
     const threshold = Number(policy.shieldThreshold);
     if (Number.isFinite(keep) && keep >= 1 && keep <= 12) STATE.coldKeep = keep;
     if (Number.isFinite(threshold) && threshold >= 1 && threshold <= 10) STATE.shieldThreshold = threshold;
     STATE.pressure = Number(policy.pressure) || 0;
     STATE.thermal = Number(policy.thermal) || 0;
-    updatePressureClasses();
-    scheduleWindowing();
+
+    if (oldPressure !== STATE.pressure || oldThermal !== STATE.thermal) updatePressureClasses();
+    if (oldKeep !== STATE.coldKeep) scheduleWindowing();
+    if (oldThreshold !== STATE.shieldThreshold && STATE.shielded && STATE.pain < STATE.shieldThreshold) {
+      removeShield();
+    }
   }
 
-  function sendTelemetry(force = false) {
+  function sendTelemetry(force = false, generatingHint = null) {
     const now = performance.now();
-    if (!force && (STATE.telemetryBusy || now - STATE.lastTelemetryAt < 1200)) return;
+    const generating = typeof generatingHint === 'boolean' ? generatingHint : isGenerating();
+    const minInterval = document.hidden ? 10000 : (generating || STATE.shielded ? 1200 : 5000);
+    if (!force && (STATE.telemetryBusy || now - STATE.lastTelemetryAt < minInterval)) return;
     if (typeof browser === 'undefined' || !browser.runtime?.sendNativeMessage) return;
+
     STATE.telemetryBusy = true;
     STATE.lastTelemetryAt = now;
     const message = {
       type: 'telemetry',
-      generating: isGenerating(),
+      generating,
       shielded: STATE.shielded,
       pain: Math.round(STATE.pain),
       turns: STATE.turns.length,
@@ -226,80 +278,123 @@
       .finally(() => { STATE.telemetryBusy = false; });
   }
 
-  function performanceTick() {
+  function performanceTick(expectedDelay) {
+    STATE.loopTimer = 0;
     const now = performance.now();
-    const drift = now - STATE.lastTick - 500;
+    const drift = document.hidden ? 0 : Math.max(0, now - STATE.lastTick - expectedDelay);
     STATE.lastTick = now;
     const generating = isGenerating();
 
-    if (generating) {
+    if (document.hidden) {
+      if (STATE.shielded) removeShield();
+      STATE.pain = Math.max(0, STATE.pain - 1);
+    } else if (generating) {
       STATE.generationSeen = true;
       if (drift > 120) STATE.pain = Math.min(10, STATE.pain + 2);
       else if (drift > 55) STATE.pain = Math.min(10, STATE.pain + 0.8);
       else STATE.pain = Math.max(0, STATE.pain - 0.25);
 
       if (STATE.pain >= STATE.shieldThreshold && !STATE.showLiveForCurrentRun) applyShield();
-      if (STATE.shielded) applyShield();
-      scheduleWindowing();
     } else if (STATE.generationSeen) {
       STATE.generationSeen = false;
       STATE.showLiveForCurrentRun = false;
       STATE.pain = 0;
       removeShield();
       scheduleWindowing();
-      sendTelemetry(true);
+      sendTelemetry(true, false);
     } else {
       STATE.pain = Math.max(0, STATE.pain - 0.5);
     }
 
     updatePressureClasses();
-    sendTelemetry(false);
+    sendTelemetry(false, generating);
+
+    const nextDelay = document.hidden ? 4000 : (generating ? 350 : 900);
+    STATE.loopTimer = setTimeout(() => performanceTick(nextDelay), nextDelay);
+  }
+
+  function startPerformanceLoop() {
+    if (STATE.loopTimer) return;
+    STATE.lastTick = performance.now();
+    const delay = document.hidden ? 4000 : 500;
+    STATE.loopTimer = setTimeout(() => performanceTick(delay), delay);
   }
 
   function scheduleWindowing() {
-    if (STATE.timer) return;
+    if (STATE.windowTimer) return;
     const run = () => {
-      STATE.timer = 0;
+      STATE.windowTimer = 0;
       applyWindowing();
     };
     if ('requestIdleCallback' in window) {
-      STATE.timer = requestIdleCallback(run, { timeout: 450 });
+      STATE.windowTimer = requestIdleCallback(run, { timeout: 450 });
     } else {
-      STATE.timer = setTimeout(run, 80);
+      STATE.windowTimer = setTimeout(run, 80);
     }
   }
 
+  function chooseObserverRoot() {
+    return document.querySelector('main') || document.documentElement;
+  }
+
   function startObserver() {
-    if (STATE.observer || !document.documentElement) return;
-    const root = document.querySelector('main') || document.documentElement;
+    if (!document.documentElement) return;
+    const root = chooseObserverRoot();
+    if (STATE.observer && STATE.observedRoot === root && root.isConnected) return;
+    if (STATE.observer) STATE.observer.disconnect();
+
+    STATE.observer = null;
+    STATE.observedRoot = root;
+    STATE.turns = [];
     root.querySelectorAll?.(TURN_SELECTOR).forEach(addTurn);
+    compactTurns(true);
+
     STATE.observer = new MutationObserver(records => {
-      let touched = false;
+      let structuralChange = false;
       for (const record of records) {
-        if (!record.addedNodes?.length && !record.removedNodes?.length) continue;
-        touched = true;
-        record.addedNodes?.forEach(scanAdded);
+        if (record.removedNodes?.length) structuralChange = true;
+        if (!record.addedNodes?.length) continue;
+        for (const node of record.addedNodes) {
+          structuralChange = scanAdded(node) || structuralChange;
+        }
       }
-      if (touched) {
-        compactTurns();
-        if (STATE.shielded) applyShield();
-        scheduleWindowing();
-      }
+      if (!structuralChange) return;
+      compactTurns(true);
+      if (STATE.shielded) applyShield();
+      scheduleWindowing();
     });
     STATE.observer.observe(root, { childList: true, subtree: true });
     scheduleWindowing();
   }
 
+  function revalidateObserver() {
+    if (!STATE.observedRoot?.isConnected) startObserver();
+  }
+
   addStyles();
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startObserver, { once: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      startObserver();
+      startPerformanceLoop();
+    }, { once: true });
   } else {
     startObserver();
+    startPerformanceLoop();
   }
-  setInterval(performanceTick, 500);
-  window.addEventListener('pageshow', () => { startObserver(); scheduleWindowing(); sendTelemetry(true); }, { passive: true });
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { startObserver(); scheduleWindowing(); }
+
+  window.addEventListener('pageshow', () => {
+    startObserver();
+    startPerformanceLoop();
+    scheduleWindowing();
     sendTelemetry(true);
   }, { passive: true });
+
+  document.addEventListener('visibilitychange', () => {
+    revalidateObserver();
+    if (!document.hidden) scheduleWindowing();
+    STATE.lastTick = performance.now();
+    sendTelemetry(true);
+  }, { passive: true });
+
+  setInterval(revalidateObserver, 5000);
 })();
