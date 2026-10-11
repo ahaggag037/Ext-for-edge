@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: geckoview-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,7 +27,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate built-in performance engine
+      - name: Validate browser sources
         shell: bash
         run: |
           set -euo pipefail
@@ -32,15 +36,30 @@ jobs:
             node --check browser/app/src/main/assets/edgeflow/global_optimizer.js
           fi
           python3 - <<'PY'
-          import json
+          import json, re
           from pathlib import Path
-          p = Path('browser/app/src/main/assets/edgeflow/manifest.json')
-          data = json.loads(p.read_text())
-          assert data['browser_specific_settings']['gecko']['id'] == 'edgeflow-core@edgeflow.local'
-          assert 'nativeMessagingFromContent' in data.get('permissions', [])
-          matches = [m for script in data.get('content_scripts', []) for m in script.get('matches', [])]
+
+          manifest = json.loads(Path('browser/app/src/main/assets/edgeflow/manifest.json').read_text())
+          assert manifest['browser_specific_settings']['gecko']['id'] == 'edgeflow-core@edgeflow.local'
+          assert 'nativeMessagingFromContent' in manifest.get('permissions', [])
+          matches = [m for script in manifest.get('content_scripts', []) for m in script.get('matches', [])]
           assert 'https://chatgpt.com/*' in matches
-          print('EdgeFlow Core manifest/static checks: PASS')
+
+          android_manifest = Path('browser/app/src/main/AndroidManifest.xml').read_text()
+          gradle = Path('browser/app/build.gradle').read_text()
+          if 'browser/v0.4-aegis' in '${{ github.ref }}':
+              assert '.AegisActivity' in android_manifest
+              assert "versionName '0.4.0-aegis'" in gradle
+              global_js = Path('browser/app/src/main/assets/edgeflow/global_optimizer.js').read_text()
+              assert "host === 'chatgpt.com'" in global_js
+              required = [
+                  'BrowserDataStore.java', 'SiteDataController.java', 'WebNotificationController.java',
+                  'PerformanceGuardian.java', 'AegisActivity.java'
+              ]
+              root = Path('browser/app/src/main/java/com/edgeflow/browser')
+              for name in required:
+                  assert (root / name).exists(), name
+          print('EdgeFlow browser static checks: PASS')
           PY
 
       - name: Set up JDK 17
@@ -80,6 +99,11 @@ jobs:
           test -n "$APK"
           test -s "$APK"
           unzip -t "$APK"
+          unzip -l "$APK" | grep -q 'assets/edgeflow/manifest.json'
+          unzip -l "$APK" | grep -q 'assets/edgeflow/chatgpt.js'
+          if [ -f browser/app/src/main/assets/edgeflow/global_optimizer.js ]; then
+            unzip -l "$APK" | grep -q 'assets/edgeflow/global_optimizer.js'
+          fi
           sha256sum "$APK"
 
       - name: Upload browser APK
