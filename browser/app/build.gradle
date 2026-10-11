@@ -33,6 +33,13 @@ android {
     }
 
     packaging {
+        jniLibs {
+            // The target phone has a limited data budget. Compress Gecko's native
+            // libraries in the APK and let Android extract them at install time.
+            // This trades installed-storage/startup packaging efficiency for a much
+            // smaller over-the-network APK while keeping the same ARM64 runtime bits.
+            useLegacyPackaging true
+        }
         resources {
             excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE*', 'META-INF/NOTICE*']
         }
