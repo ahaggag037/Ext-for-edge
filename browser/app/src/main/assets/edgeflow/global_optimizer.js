@@ -4,6 +4,8 @@
   const STATE = {
     pressure: 0,
     aggressive: false,
+    dataSaver: false,
+    powerSave: false,
     observer: null,
     mediaObserver: null,
     policyTimer: 0,
@@ -35,7 +37,7 @@
   function applyClasses() {
     const root = document.documentElement;
     if (!root) return;
-    root.classList.toggle('ef-global-watch', STATE.pressure >= 1);
+    root.classList.toggle('ef-global-watch', STATE.pressure >= 1 || STATE.powerSave);
     root.classList.toggle('ef-global-high', STATE.pressure >= 2);
     root.classList.toggle('ef-global-critical', STATE.pressure >= 3);
   }
@@ -58,13 +60,17 @@
     } catch (_) {}
   }
 
+  function retuneMedia(media) {
+    try {
+      if ((STATE.dataSaver || STATE.pressure >= 3) && media.paused) media.preload = 'none';
+      else if ((STATE.dataSaver || STATE.pressure >= 1) && media.preload === 'auto') media.preload = 'metadata';
+    } catch (_) {}
+  }
+
   function tuneMedia(media) {
     if (!(media instanceof HTMLMediaElement) || STATE.touched.has(media)) return;
     STATE.touched.add(media);
-    try {
-      if (STATE.pressure >= 3 && media.paused) media.preload = 'none';
-      else if (STATE.pressure >= 1 && media.preload === 'auto') media.preload = 'metadata';
-    } catch (_) {}
+    retuneMedia(media);
     STATE.mediaObserver?.observe(media);
   }
 
@@ -81,27 +87,23 @@
   }
 
   function retuneKnownMedia() {
-    document.querySelectorAll('video,audio').forEach(media => {
-      try {
-        if (STATE.pressure >= 3 && media.paused) media.preload = 'none';
-        else if (STATE.pressure >= 1 && media.preload === 'auto') media.preload = 'metadata';
-      } catch (_) {}
-    });
+    document.querySelectorAll('video,audio').forEach(retuneMedia);
   }
 
   function installObservers() {
-    if (!('IntersectionObserver' in window)) return;
-    STATE.mediaObserver = new IntersectionObserver(entries => {
-      if (STATE.pressure < 2) return;
-      for (const entry of entries) {
-        const media = entry.target;
-        if (!(media instanceof HTMLMediaElement)) continue;
-        // Only stop off-screen muted autoplay. Never interrupt audible media.
-        if (!entry.isIntersecting && media.muted && !media.paused && !media.controls) {
-          try { media.pause(); } catch (_) {}
+    if ('IntersectionObserver' in window) {
+      STATE.mediaObserver = new IntersectionObserver(entries => {
+        if (!STATE.dataSaver && STATE.pressure < 2) return;
+        for (const entry of entries) {
+          const media = entry.target;
+          if (!(media instanceof HTMLMediaElement)) continue;
+          // Never stop audible playback. Only suppress muted, controls-free autoplay.
+          if (!entry.isIntersecting && media.muted && !media.paused && !media.controls) {
+            try { media.pause(); } catch (_) {}
+          }
         }
-      }
-    }, { rootMargin: '250% 0px 250% 0px', threshold: 0.01 });
+      }, { rootMargin: '200% 0px 200% 0px', threshold: 0.01 });
+    }
 
     const root = document.documentElement;
     STATE.observer = new MutationObserver(records => {
@@ -117,6 +119,8 @@
     const next = Number(policy.pressure);
     STATE.pressure = Number.isFinite(next) ? Math.max(0, Math.min(3, next)) : 0;
     STATE.aggressive = !!policy.aggressive;
+    STATE.dataSaver = !!policy.dataSaver;
+    STATE.powerSave = !!policy.powerSave;
     applyClasses();
     retuneKnownMedia();
   }
@@ -163,6 +167,5 @@
     refreshPolicy(true);
     schedulePolicyLoop();
   }, { passive: true });
-
   window.addEventListener('pageshow', () => refreshPolicy(true), { passive: true });
 })();
