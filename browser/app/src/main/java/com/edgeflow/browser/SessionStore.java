@@ -42,16 +42,24 @@ final class SessionStore {
                 persistedIndex++;
             } catch (Exception ignored) {}
         }
+
+        String encrypted = SecureStateCodec.encrypt(array.toString());
+        if (encrypted.isEmpty() && array.length() > 0) {
+            // Fail closed: never persist potentially sensitive Gecko session state as plaintext.
+            return;
+        }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
-                .putString(KEY_TABS, array.toString())
+                .putString(KEY_TABS, encrypted)
                 .putInt(KEY_SELECTED, persistedSelected)
                 .apply();
     }
 
     static Snapshot load(Context context) {
         SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String raw = prefs.getString(KEY_TABS, "[]");
+        String stored = prefs.getString(KEY_TABS, "");
+        String raw = SecureStateCodec.decrypt(stored);
+        if (raw == null || raw.isEmpty()) raw = "[]";
         ArrayList<BrowserTab> out = new ArrayList<>();
         try {
             JSONArray array = new JSONArray(raw);
