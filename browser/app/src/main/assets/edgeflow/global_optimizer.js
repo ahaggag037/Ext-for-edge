@@ -1,0 +1,168 @@
+(() => {
+  'use strict';
+
+  const STATE = {
+    pressure: 0,
+    aggressive: false,
+    observer: null,
+    mediaObserver: null,
+    policyTimer: 0,
+    lastPolicyAt: 0,
+    touched: new WeakSet()
+  };
+
+  function ensureStyle() {
+    if (document.getElementById('edgeflow-global-style')) return;
+    const style = document.createElement('style');
+    style.id = 'edgeflow-global-style';
+    style.textContent = `
+      html.ef-global-watch { scroll-behavior: auto !important; }
+      html.ef-global-high *,
+      html.ef-global-high *::before,
+      html.ef-global-high *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
+      html.ef-global-critical [style*="backdrop-filter"],
+      html.ef-global-critical [class*="backdrop"] {
+        backdrop-filter: none !important;
+      }
+    `;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function applyClasses() {
+    const root = document.documentElement;
+    if (!root) return;
+    root.classList.toggle('ef-global-watch', STATE.pressure >= 1);
+    root.classList.toggle('ef-global-high', STATE.pressure >= 2);
+    root.classList.toggle('ef-global-critical', STATE.pressure >= 3);
+  }
+
+  function tuneImage(img) {
+    if (!(img instanceof HTMLImageElement) || STATE.touched.has(img)) return;
+    STATE.touched.add(img);
+    try {
+      img.decoding = 'async';
+      if (!img.loading) img.loading = 'lazy';
+      if ('fetchPriority' in img && !img.fetchPriority) img.fetchPriority = 'auto';
+    } catch (_) {}
+  }
+
+  function tuneFrame(frame) {
+    if (!(frame instanceof HTMLIFrameElement) || STATE.touched.has(frame)) return;
+    STATE.touched.add(frame);
+    try {
+      if (!frame.loading) frame.loading = 'lazy';
+    } catch (_) {}
+  }
+
+  function tuneMedia(media) {
+    if (!(media instanceof HTMLMediaElement) || STATE.touched.has(media)) return;
+    STATE.touched.add(media);
+    try {
+      if (STATE.pressure >= 3 && media.paused) media.preload = 'none';
+      else if (STATE.pressure >= 1 && media.preload === 'auto') media.preload = 'metadata';
+    } catch (_) {}
+    STATE.mediaObserver?.observe(media);
+  }
+
+  function tuneNode(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node;
+    if (el.matches?.('img')) tuneImage(el);
+    else if (el.matches?.('iframe')) tuneFrame(el);
+    else if (el.matches?.('video,audio')) tuneMedia(el);
+
+    el.querySelectorAll?.('img').forEach(tuneImage);
+    el.querySelectorAll?.('iframe').forEach(tuneFrame);
+    el.querySelectorAll?.('video,audio').forEach(tuneMedia);
+  }
+
+  function retuneKnownMedia() {
+    document.querySelectorAll('video,audio').forEach(media => {
+      try {
+        if (STATE.pressure >= 3 && media.paused) media.preload = 'none';
+        else if (STATE.pressure >= 1 && media.preload === 'auto') media.preload = 'metadata';
+      } catch (_) {}
+    });
+  }
+
+  function installObservers() {
+    if (!('IntersectionObserver' in window)) return;
+    STATE.mediaObserver = new IntersectionObserver(entries => {
+      if (STATE.pressure < 2) return;
+      for (const entry of entries) {
+        const media = entry.target;
+        if (!(media instanceof HTMLMediaElement)) continue;
+        // Only stop off-screen muted autoplay. Never interrupt audible media.
+        if (!entry.isIntersecting && media.muted && !media.paused && !media.controls) {
+          try { media.pause(); } catch (_) {}
+        }
+      }
+    }, { rootMargin: '250% 0px 250% 0px', threshold: 0.01 });
+
+    const root = document.documentElement;
+    STATE.observer = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes || []) tuneNode(node);
+      }
+    });
+    STATE.observer.observe(root, { childList: true, subtree: true });
+  }
+
+  function applyPolicy(policy) {
+    if (!policy || typeof policy !== 'object') return;
+    const next = Number(policy.pressure);
+    STATE.pressure = Number.isFinite(next) ? Math.max(0, Math.min(3, next)) : 0;
+    STATE.aggressive = !!policy.aggressive;
+    applyClasses();
+    retuneKnownMedia();
+  }
+
+  async function refreshPolicy(force = false) {
+    const now = performance.now();
+    if (!force && now - STATE.lastPolicyAt < 4000) return;
+    STATE.lastPolicyAt = now;
+    if (typeof browser === 'undefined' || !browser.runtime?.sendNativeMessage) return;
+    try {
+      const policy = await browser.runtime.sendNativeMessage('edgeflow.browser', {
+        type: 'page_policy',
+        hidden: document.hidden,
+        url: location.href
+      });
+      applyPolicy(policy);
+    } catch (_) {}
+  }
+
+  function schedulePolicyLoop() {
+    clearTimeout(STATE.policyTimer);
+    const delay = document.hidden ? 30000 : 8000;
+    STATE.policyTimer = setTimeout(async () => {
+      await refreshPolicy();
+      schedulePolicyLoop();
+    }, delay);
+  }
+
+  function start() {
+    ensureStyle();
+    tuneNode(document.documentElement);
+    installObservers();
+    refreshPolicy(true);
+    schedulePolicyLoop();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    refreshPolicy(true);
+    schedulePolicyLoop();
+  }, { passive: true });
+
+  window.addEventListener('pageshow', () => refreshPolicy(true), { passive: true });
+})();
