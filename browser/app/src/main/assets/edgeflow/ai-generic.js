@@ -8,7 +8,10 @@
     timer: 0,
     loop: 0,
     lastTick: performance.now(),
-    candidates: []
+    candidates: [],
+    lastScanAt: 0,
+    nativeBusy: false,
+    lastNativeAt: 0
   };
 
   const ITEM_SELECTOR = [
@@ -41,12 +44,12 @@
   }
 
   function normalize() {
+    S.lastScanAt = performance.now();
     const root = document.querySelector('main') || document.body || document.documentElement;
     if (!root) return;
     const found = Array.from(root.querySelectorAll(ITEM_SELECTOR))
       .filter(node => node && node.isConnected && node.getBoundingClientRect().height > 48);
 
-    // De-duplicate nested matches. We want coarse conversation units, not every inner wrapper.
     const coarse = [];
     for (const node of found) {
       if (coarse.some(parent => parent.contains(node))) continue;
@@ -62,15 +65,29 @@
     }
   }
 
-  function schedule() {
+  function schedule(urgent = false) {
     if (S.timer) return;
     const run = () => { S.timer = 0; normalize(); };
-    if ('requestIdleCallback' in window) S.timer = requestIdleCallback(run, { timeout: 500 });
-    else S.timer = setTimeout(run, 120);
+    if (!urgent && 'requestIdleCallback' in window) {
+      S.timer = requestIdleCallback(run, { timeout: 700 });
+    } else {
+      S.timer = setTimeout(run, urgent ? 80 : 260);
+    }
   }
 
-  function askNative() {
+  function looksStructural(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+    if (node.matches?.(ITEM_SELECTOR)) return true;
+    return !!node.querySelector?.(ITEM_SELECTOR);
+  }
+
+  function askNative(force = false) {
     if (typeof browser === 'undefined' || !browser.runtime?.sendNativeMessage) return;
+    const now = performance.now();
+    const min = document.hidden ? 12000 : 2500;
+    if (!force && (S.nativeBusy || now - S.lastNativeAt < min)) return;
+    S.nativeBusy = true;
+    S.lastNativeAt = now;
     Promise.resolve(browser.runtime.sendNativeMessage('edgeflow.browser', {
       type: 'ai-health',
       hidden: document.hidden,
@@ -81,8 +98,8 @@
       const old = S.pressure;
       S.pressure = Number(policy.pressure) || 0;
       document.documentElement.classList.toggle('ef-ai-pressure', S.pressure >= 2 || S.pain >= 4);
-      if (old !== S.pressure) schedule();
-    }).catch(() => {});
+      if (old !== S.pressure) schedule(true);
+    }).catch(() => {}).finally(() => { S.nativeBusy = false; });
   }
 
   function tick(expected) {
@@ -96,36 +113,42 @@
       else S.pain = Math.max(0, S.pain - .25);
       document.documentElement.classList.toggle('ef-ai-pressure', S.pressure >= 2 || S.pain >= 4);
     }
-    askNative();
-    const next = document.hidden ? 5000 : 1200;
+    askNative(false);
+    const next = document.hidden ? 5000 : 1400;
     S.loop = setTimeout(() => tick(next), next);
   }
 
   function start() {
     addStyle();
-    schedule();
+    schedule(true);
     const root = document.querySelector('main') || document.body || document.documentElement;
     if (root && 'MutationObserver' in window) {
       S.observer = new MutationObserver(records => {
         let structural = false;
         for (const record of records) {
-          if (record.addedNodes?.length || record.removedNodes?.length) { structural = true; break; }
+          if (record.removedNodes?.length) { structural = true; break; }
+          for (const node of record.addedNodes || []) {
+            if (looksStructural(node)) { structural = true; break; }
+          }
+          if (structural) break;
         }
-        if (structural) schedule();
+        if (!structural) return;
+        const since = performance.now() - S.lastScanAt;
+        schedule(since > 1200);
       });
       S.observer.observe(root, { childList: true, subtree: true });
     }
     S.lastTick = performance.now();
-    S.loop = setTimeout(() => tick(700), 700);
-    askNative();
+    S.loop = setTimeout(() => tick(900), 900);
+    askNative(true);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
   else start();
 
-  window.addEventListener('pageshow', schedule, { passive: true });
+  window.addEventListener('pageshow', () => { schedule(true); askNative(true); }, { passive: true });
   document.addEventListener('visibilitychange', () => {
     S.lastTick = performance.now();
-    if (!document.hidden) { schedule(); askNative(); }
+    if (!document.hidden) { schedule(true); askNative(true); }
   }, { passive: true });
 })();
