@@ -19,7 +19,7 @@
         "https://chatgpt.com/*",
         "https://chat.openai.com/*"
       ],
-      "js": ["chatgpt.js"],
+      "js": ["chatgpt-mobile.js", "chatgpt.js"],
       "run_at": "document_start"
     },
     {
