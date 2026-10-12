@@ -27,6 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          node --check browser/app/src/main/assets/edgeflow/chatgpt-mobile.js
           node --check browser/app/src/main/assets/edgeflow/chatgpt.js
           node --check browser/app/src/main/assets/edgeflow/ai-generic.js
           node --check browser/app/src/main/assets/edgeflow/general.js
@@ -39,6 +40,8 @@ jobs:
           assert 'nativeMessagingFromContent' in data.get('permissions', [])
           scripts = data['content_scripts']
           assert 'https://chatgpt.com/*' in scripts[0]['matches']
+          assert 'chatgpt-mobile.js' in scripts[0]['js']
+          assert 'chatgpt.js' in scripts[0]['js']
           assert 'ai-generic.js' in scripts[1]['js']
           assert 'https://claude.ai/*' in scripts[1]['matches']
           assert 'https://gemini.google.com/*' in scripts[1]['matches']
