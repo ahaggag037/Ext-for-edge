@@ -42,4 +42,13 @@
             <extra android:name="section" android:value="bookmarks" />
         </intent>
     </shortcut>
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_settings">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.edgeflow.browser"
+            android:targetClass="com.edgeflow.browser.SettingsActivity" />
+    </shortcut>
 </shortcuts>
