@@ -19,6 +19,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      EDGEFLOW_KEYSTORE_B64: ${{ secrets.EDGEFLOW_KEYSTORE_B64 }}
+      EDGEFLOW_STORE_PASSWORD: ${{ secrets.EDGEFLOW_STORE_PASSWORD }}
+      EDGEFLOW_KEY_ALIAS: ${{ secrets.EDGEFLOW_KEY_ALIAS }}
+      EDGEFLOW_KEY_PASSWORD: ${{ secrets.EDGEFLOW_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,6 +85,23 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
+      - name: Prepare optional release signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${EDGEFLOW_KEYSTORE_B64:-}" ] \
+             && [ -n "${EDGEFLOW_STORE_PASSWORD:-}" ] \
+             && [ -n "${EDGEFLOW_KEY_ALIAS:-}" ] \
+             && [ -n "${EDGEFLOW_KEY_PASSWORD:-}" ]; then
+            printf '%s' "$EDGEFLOW_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/edgeflow-release.jks"
+            echo "EDGEFLOW_KEYSTORE_PATH=$RUNNER_TEMP/edgeflow-release.jks" >> "$GITHUB_ENV"
+            echo "EDGEFLOW_SIGNED_RELEASE=1" >> "$GITHUB_ENV"
+            echo "Stable signing secrets detected; CI will build a release APK."
+          else
+            echo "EDGEFLOW_SIGNED_RELEASE=0" >> "$GITHUB_ENV"
+            echo "Release signing secrets are not configured; CI will build a development APK."
+          fi
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -89,13 +111,20 @@ jobs:
         run: gradle -p browser --no-daemon :app:lintDebug
 
       - name: Build browser APK
-        run: gradle -p browser --no-daemon :app:assembleDebug
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${EDGEFLOW_SIGNED_RELEASE:-0}" = "1" ]; then
+            gradle -p browser --no-daemon :app:assembleRelease
+          else
+            gradle -p browser --no-daemon :app:assembleDebug
+          fi
 
       - name: Verify APK deeply
         shell: bash
         run: |
           set -euo pipefail
-          APK=$(find browser/app/build/outputs/apk/debug -name '*.apk' -type f | head -n1)
+          APK=$(find browser/app/build/outputs/apk -name '*.apk' -type f | head -n1)
           test -n "$APK"
           test -s "$APK"
           unzip -t "$APK"
@@ -113,11 +142,12 @@ jobs:
           fi
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
           sha256sum "$APK"
+          echo "EDGEFLOW_APK=$APK" >> "$GITHUB_ENV"
 
       - name: Upload browser APK
         uses: actions/upload-artifact@v4
         with:
           name: EdgeFlow-Browser-Nova-ARM64
-          path: browser/app/build/outputs/apk/debug/*.apk
+          path: ${{ env.EDGEFLOW_APK }}
           if-no-files-found: error
           retention-days: 30
