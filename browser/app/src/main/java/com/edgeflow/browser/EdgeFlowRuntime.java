@@ -99,7 +99,14 @@ final class EdgeFlowRuntime {
                                             || !(message instanceof JSONObject)) {
                                         return GeckoResult.fromValue(null);
                                     }
-                                    JSONObject response = bridge.onMessage(session, (JSONObject) message);
+                                    JSONObject json = (JSONObject) message;
+                                    if (appContext != null && "page-meta".equals(json.optString("type", ""))) {
+                                        String url = json.optString("url", "");
+                                        String title = json.optString("title", "");
+                                        boolean privateMode = session.getSettings().getUsePrivateMode();
+                                        HistoryStore.updateTitle(appContext, url, title, privateMode);
+                                    }
+                                    JSONObject response = bridge.onMessage(session, json);
                                     return GeckoResult.fromValue(response);
                                 }
                             },
