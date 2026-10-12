@@ -50,17 +50,36 @@ final class HistoryStore {
         if (!(url.startsWith("http://") || url.startsWith("https://"))) return;
         ArrayList<Entry> entries = new ArrayList<>(list(context));
         int visits = 1;
+        String bestTitle = title == null ? "" : title.trim();
         for (int i = 0; i < entries.size(); i++) {
             Entry e = entries.get(i);
             if (url.equals(e.url)) {
                 visits = e.visits + 1;
+                if (bestTitle.isEmpty()) bestTitle = e.title;
                 entries.remove(i);
                 break;
             }
         }
-        entries.add(0, new Entry(title, url, System.currentTimeMillis(), visits));
+        entries.add(0, new Entry(bestTitle, url, System.currentTimeMillis(), visits));
         if (entries.size() > MAX) entries.subList(MAX, entries.size()).clear();
         save(context, entries);
+    }
+
+    static synchronized void updateTitle(Context context, String url, String title, boolean privateMode) {
+        if (privateMode || url == null || title == null) return;
+        String cleaned = title.trim();
+        if (cleaned.isEmpty()) return;
+        ArrayList<Entry> entries = new ArrayList<>(list(context));
+        boolean changed = false;
+        for (int i = 0; i < entries.size(); i++) {
+            Entry e = entries.get(i);
+            if (url.equals(e.url) && !cleaned.equals(e.title)) {
+                entries.set(i, new Entry(cleaned, e.url, e.visitedAt, e.visits));
+                changed = true;
+                break;
+            }
+        }
+        if (changed) save(context, entries);
     }
 
     static synchronized void clear(Context context) {
