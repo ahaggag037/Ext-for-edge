@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
     <shortcut
+        android:shortcutId="ai_hub"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_ai_hub">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.edgeflow.browser"
+            android:targetClass="com.edgeflow.browser.AiHubActivity" />
+    </shortcut>
+    <shortcut
         android:shortcutId="chatgpt"
         android:enabled="true"
         android:shortcutShortLabel="@string/shortcut_chatgpt">
