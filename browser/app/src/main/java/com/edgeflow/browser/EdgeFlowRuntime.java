@@ -48,7 +48,7 @@ final class EdgeFlowRuntime {
                 .build();
         blocking.setSafeBrowsing(ContentBlocking.SafeBrowsing.DEFAULT);
 
-        GeckoRuntimeSettings settings = new GeckoRuntimeSettings.Builder()
+        GeckoRuntimeSettings.Builder builder = new GeckoRuntimeSettings.Builder()
                 .contentBlocking(blocking)
                 .fissionEnabled(true)
                 .lowMemoryDetection(true)
@@ -59,8 +59,14 @@ final class EdgeFlowRuntime {
                 .globalPrivacyControlEnabled(true)
                 .preferredColorScheme(GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM)
                 .consoleOutput(false)
-                .debugLogging(false)
-                .build();
+                .debugLogging(false);
+
+        if (BrowserPrefs.isSecureDns(appContext)) {
+            // TRR-first tries DNS-over-HTTPS and safely falls back to the native resolver when needed.
+            builder.trustedRecursiveResolverMode(GeckoRuntimeSettings.TRR_MODE_FIRST);
+        }
+
+        GeckoRuntimeSettings settings = builder.build();
         settings.setWebContentIsolationStrategy(GeckoRuntimeSettings.STRATEGY_ISOLATE_HIGH_VALUE);
 
         runtime = GeckoRuntime.create(appContext, settings);
@@ -107,6 +113,13 @@ final class EdgeFlowRuntime {
                                         HistoryStore.updateTitle(appContext, url, title, privateMode);
                                     }
                                     JSONObject response = bridge.onMessage(session, json);
+                                    if (response == null) response = new JSONObject();
+                                    if (appContext != null) {
+                                        try {
+                                            response.put("dataSaver", BrowserPrefs.isDataSaver(appContext));
+                                            response.put("secureDns", BrowserPrefs.isSecureDns(appContext));
+                                        } catch (Throwable ignored) {}
+                                    }
                                     return GeckoResult.fromValue(response);
                                 }
                             },
