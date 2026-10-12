@@ -10,8 +10,11 @@
     trackedMedia: new WeakSet(),
     resumedMedia: new WeakSet(),
     lastPolicyAt: 0,
-    saveData: !!navigator.connection?.saveData
+    platformSaveData: !!navigator.connection?.saveData,
+    nativeSaveData: false
   };
+
+  function saveData() { return S.platformSaveData || S.nativeSaveData; }
 
   const STYLE_ID = 'edgeflow-general-style';
 
@@ -44,8 +47,10 @@
   function applyPolicy(policy) {
     if (!policy || typeof policy !== 'object') return;
     const before = S.pressure;
+    const oldSave = saveData();
     S.pressure = Number(policy.pressure) || 0;
     S.aggressive = !!policy.aggressive;
+    S.nativeSaveData = !!policy.dataSaver;
     const root = document.documentElement;
     if (!root) return;
     root.classList.toggle('ef-general-pressure', S.pressure >= 2 || S.aggressive);
@@ -56,6 +61,7 @@
     } else if (before >= 2) {
       document.querySelectorAll('.ef-general-cold').forEach(node => node.classList.remove('ef-general-cold'));
     }
+    if (oldSave !== saveData()) optimizeMedia(document);
   }
 
   function askNative(force = false) {
@@ -68,7 +74,7 @@
       type: 'page-health',
       hidden: document.hidden,
       nodeCount: document.getElementsByTagName('*').length,
-      saveData: S.saveData
+      saveData: saveData()
     })).then(applyPolicy).catch(() => {});
   }
 
@@ -82,8 +88,8 @@
   function optimizeImages(root) {
     root.querySelectorAll?.('img').forEach(img => {
       if (!img.hasAttribute('decoding')) img.decoding = 'async';
-      if (!img.hasAttribute('loading') && (S.saveData || shouldLazy(img))) img.loading = 'lazy';
-      if ((S.pressure >= 2 || S.saveData) && !img.hasAttribute('fetchpriority') && shouldLazy(img)) {
+      if (!img.hasAttribute('loading') && (saveData() || shouldLazy(img))) img.loading = 'lazy';
+      if ((S.pressure >= 2 || saveData()) && !img.hasAttribute('fetchpriority') && shouldLazy(img)) {
         img.setAttribute('fetchpriority', 'low');
       }
     });
@@ -114,7 +120,7 @@
     root.querySelectorAll?.('video, audio').forEach(media => {
       if (S.trackedMedia.has(media)) return;
       S.trackedMedia.add(media);
-      if ((S.saveData || S.pressure >= 2) && media.preload === 'auto' && !media.autoplay) media.preload = 'metadata';
+      if ((saveData() || S.pressure >= 2) && media.preload === 'auto' && !media.autoplay) media.preload = 'metadata';
       S.mediaObserver?.observe(media);
     });
   }
@@ -185,7 +191,7 @@
   }, { passive: true });
 
   navigator.connection?.addEventListener?.('change', () => {
-    S.saveData = !!navigator.connection?.saveData;
+    S.platformSaveData = !!navigator.connection?.saveData;
     optimizeMedia(document);
   });
 
