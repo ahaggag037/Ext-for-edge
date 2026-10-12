@@ -19,7 +19,7 @@
         "https://chatgpt.com/*",
         "https://chat.openai.com/*"
       ],
-      "js": ["chatgpt-mobile.js", "chatgpt.js"],
+      "js": ["page-meta.js", "chatgpt-mobile.js", "chatgpt.js"],
       "run_at": "document_start"
     },
     {
@@ -33,7 +33,7 @@
         "https://copilot.microsoft.com/*",
         "https://chat.deepseek.com/*"
       ],
-      "js": ["ai-generic.js"],
+      "js": ["page-meta.js", "ai-generic.js"],
       "run_at": "document_start"
     },
     {
@@ -53,7 +53,7 @@
         "https://copilot.microsoft.com/*",
         "https://chat.deepseek.com/*"
       ],
-      "js": ["general.js"],
+      "js": ["page-meta.js", "general.js"],
       "run_at": "document_start"
     }
   ]
