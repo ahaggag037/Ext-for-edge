@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="chatgpt"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_chatgpt">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.edgeflow.browser"
+            android:targetClass="com.edgeflow.browser.BrowserActivity"
+            android:data="https://chatgpt.com/" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="history"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_history">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.edgeflow.browser"
+            android:targetClass="com.edgeflow.browser.LibraryActivity">
+            <extra android:name="section" android:value="history" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="bookmarks"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_bookmarks">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.edgeflow.browser"
+            android:targetClass="com.edgeflow.browser.LibraryActivity">
+            <extra android:name="section" android:value="bookmarks" />
+        </intent>
+    </shortcut>
+</shortcuts>
