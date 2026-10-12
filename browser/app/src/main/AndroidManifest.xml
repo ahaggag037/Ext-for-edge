@@ -17,6 +17,10 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
         <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+        <activity
             android:name=".AiHubActivity"
             android:exported="false"
             android:screenOrientation="unspecified" />
