@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+def edgeflowKeystorePath = System.getenv('EDGEFLOW_KEYSTORE_PATH')
+def edgeflowStorePassword = System.getenv('EDGEFLOW_STORE_PASSWORD')
+def edgeflowKeyAlias = System.getenv('EDGEFLOW_KEY_ALIAS')
+def edgeflowKeyPassword = System.getenv('EDGEFLOW_KEY_PASSWORD')
+def edgeflowReleaseSigningReady = edgeflowKeystorePath && edgeflowStorePassword && edgeflowKeyAlias && edgeflowKeyPassword
+
 android {
     namespace 'com.edgeflow.browser'
     compileSdk 36
@@ -22,9 +28,27 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    signingConfigs {
+        if (edgeflowReleaseSigningReady) {
+            release {
+                storeFile file(edgeflowKeystorePath)
+                storePassword edgeflowStorePassword
+                keyAlias edgeflowKeyAlias
+                keyPassword edgeflowKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+                enableV4Signing true
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (edgeflowReleaseSigningReady) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
             applicationIdSuffix '.debug'
