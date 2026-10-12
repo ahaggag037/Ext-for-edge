@@ -21,6 +21,18 @@
       ],
       "js": ["chatgpt.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "exclude_matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": ["general.js"],
+      "run_at": "document_start"
     }
   ]
 }
