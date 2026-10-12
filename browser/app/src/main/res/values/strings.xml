@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">EdgeFlow Browser</string>
     <string name="shortcut_chatgpt">ChatGPT</string>
+    <string name="shortcut_ai_hub">AI Hub</string>
     <string name="shortcut_history">History</string>
     <string name="shortcut_bookmarks">Bookmarks</string>
 </resources>
