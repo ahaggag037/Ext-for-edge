@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
   "name": "EdgeFlow Core",
-  "version": "0.3.0",
-  "description": "Built-in adaptive performance and compatibility engine for EdgeFlow Browser Atlas.",
+  "version": "0.4.0",
+  "description": "Built-in adaptive performance, compatibility and multi-AI acceleration engine for EdgeFlow Browser Nova.",
   "browser_specific_settings": {
     "gecko": {
       "id": "edgeflow-core@edgeflow.local"
@@ -24,12 +24,34 @@
     },
     {
       "matches": [
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://kimi.com/*",
+        "https://www.kimi.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://copilot.microsoft.com/*",
+        "https://chat.deepseek.com/*"
+      ],
+      "js": ["ai-generic.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "http://*/*",
         "https://*/*"
       ],
       "exclude_matches": [
         "https://chatgpt.com/*",
-        "https://chat.openai.com/*"
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://kimi.com/*",
+        "https://www.kimi.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://copilot.microsoft.com/*",
+        "https://chat.deepseek.com/*"
       ],
       "js": ["general.js"],
       "run_at": "document_start"
