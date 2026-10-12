@@ -62,7 +62,6 @@ final class EdgeFlowRuntime {
                 .debugLogging(false);
 
         if (BrowserPrefs.isSecureDns(appContext)) {
-            // TRR-first tries DNS-over-HTTPS and safely falls back to the native resolver when needed.
             builder.trustedRecursiveResolverMode(GeckoRuntimeSettings.TRR_MODE_FIRST);
         }
 
@@ -70,6 +69,7 @@ final class EdgeFlowRuntime {
         settings.setWebContentIsolationStrategy(GeckoRuntimeSettings.STRATEGY_ISOLATE_HIGH_VALUE);
 
         runtime = GeckoRuntime.create(appContext, settings);
+        WebNotificationBridge.install(appContext, runtime);
         runtime.warmUp();
         ensureCoreInstalled(runtime);
         return runtime;
