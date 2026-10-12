@@ -17,15 +17,20 @@ final class PerformanceGuardian {
         final long totalBytes;
         final boolean systemLowMemory;
         final int thermalStatus;
+        final boolean powerSave;
+        final boolean deviceIdle;
         final int pressure;
         final long sampledAtMs;
 
         Snapshot(long availableBytes, long totalBytes, boolean systemLowMemory,
-                 int thermalStatus, int pressure, long sampledAtMs) {
+                 int thermalStatus, boolean powerSave, boolean deviceIdle,
+                 int pressure, long sampledAtMs) {
             this.availableBytes = availableBytes;
             this.totalBytes = totalBytes;
             this.systemLowMemory = systemLowMemory;
             this.thermalStatus = thermalStatus;
+            this.powerSave = powerSave;
+            this.deviceIdle = deviceIdle;
             this.pressure = pressure;
             this.sampledAtMs = sampledAtMs;
         }
@@ -51,7 +56,8 @@ final class PerformanceGuardian {
     private final Runnable sampler = new Runnable() {
         @Override public void run() {
             sampleNow();
-            handler.postDelayed(this, 3000L);
+            long delay = latest != null && latest.pressure >= PRESSURE_HIGH ? 1800L : 3500L;
+            handler.postDelayed(this, delay);
         }
     };
 
@@ -87,28 +93,42 @@ final class PerformanceGuardian {
         ActivityManager.MemoryInfo mem = new ActivityManager.MemoryInfo();
         activityManager.getMemoryInfo(mem);
         int thermal = PowerManager.THERMAL_STATUS_NONE;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && powerManager != null) {
-            thermal = powerManager.getCurrentThermalStatus();
+        boolean powerSave = false;
+        boolean deviceIdle = false;
+        if (powerManager != null) {
+            powerSave = powerManager.isPowerSaveMode();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                deviceIdle = powerManager.isDeviceIdleMode();
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                thermal = powerManager.getCurrentThermalStatus();
+            }
         }
 
-        int pressure = classify(mem, thermal);
+        int pressure = classify(mem, thermal, powerSave, deviceIdle);
         pressure = Math.max(pressure, trimFloor);
         Snapshot next = new Snapshot(mem.availMem, mem.totalMem, mem.lowMemory,
-                thermal, pressure, System.currentTimeMillis());
+                thermal, powerSave, deviceIdle, pressure, System.currentTimeMillis());
         boolean changed = latest == null
                 || latest.pressure != next.pressure
                 || latest.thermalStatus != next.thermalStatus
+                || latest.powerSave != next.powerSave
+                || latest.deviceIdle != next.deviceIdle
                 || Math.abs(latest.availablePercent() - next.availablePercent()) >= 5;
         latest = next;
         if (changed && listener != null) listener.onPressureChanged(next);
     }
 
-    private int classify(ActivityManager.MemoryInfo mem, int thermal) {
+    private int classify(ActivityManager.MemoryInfo mem, int thermal,
+                         boolean powerSave, boolean deviceIdle) {
         int pct = mem.totalMem > 0 ? (int) ((mem.availMem * 100L) / mem.totalMem) : 100;
         int p = PRESSURE_NORMAL;
         if (pct <= 25) p = PRESSURE_WATCH;
         if (pct <= 16) p = PRESSURE_HIGH;
         if (pct <= 10 || mem.lowMemory) p = PRESSURE_CRITICAL;
+
+        if (powerSave) p = Math.max(p, PRESSURE_WATCH);
+        if (deviceIdle) p = Math.max(p, PRESSURE_HIGH);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             if (thermal >= PowerManager.THERMAL_STATUS_MODERATE) p = Math.max(p, PRESSURE_WATCH);
