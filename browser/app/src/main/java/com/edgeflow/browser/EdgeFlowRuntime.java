@@ -22,9 +22,11 @@ final class EdgeFlowRuntime {
 
     private static GeckoRuntime runtime;
     private static WebExtension coreExtension;
+    private static Context appContext;
 
     static synchronized GeckoRuntime getOrCreate(Context context) {
         if (runtime != null) return runtime;
+        appContext = context.getApplicationContext();
 
         int antiTracking = ContentBlocking.AntiTracking.DEFAULT
                 | ContentBlocking.AntiTracking.FINGERPRINTING
@@ -61,7 +63,7 @@ final class EdgeFlowRuntime {
                 .build();
         settings.setWebContentIsolationStrategy(GeckoRuntimeSettings.STRATEGY_ISOLATE_HIGH_VALUE);
 
-        runtime = GeckoRuntime.create(context.getApplicationContext(), settings);
+        runtime = GeckoRuntime.create(appContext, settings);
         runtime.warmUp();
         ensureCoreInstalled(runtime);
         return runtime;
@@ -80,6 +82,7 @@ final class EdgeFlowRuntime {
 
     static void attachBridge(GeckoSession session, NativeBridge bridge) {
         if (session == null || bridge == null || runtime == null) return;
+        if (appContext != null) HistoryBridge.attach(appContext, session);
         runtime.getWebExtensionController()
                 .ensureBuiltIn(EXTENSION_LOCATION, EXTENSION_ID)
                 .accept(extension -> {
