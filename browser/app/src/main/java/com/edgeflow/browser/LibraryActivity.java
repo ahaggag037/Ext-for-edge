@@ -6,19 +6,25 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.text.DateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
 public final class LibraryActivity extends Activity {
     private LinearLayout list;
     private TextView title;
+    private EditText search;
     private boolean showBookmarks;
 
     @Override protected void onCreate(Bundle state) {
@@ -57,9 +63,30 @@ public final class LibraryActivity extends Activity {
 
         Button switcher = button("⇄");
         switcher.setContentDescription("Switch history and bookmarks");
-        switcher.setOnClickListener(v -> { showBookmarks = !showBookmarks; refresh(); });
+        switcher.setOnClickListener(v -> {
+            showBookmarks = !showBookmarks;
+            if (search != null) search.setText("");
+            refresh();
+        });
         top.addView(switcher, new LinearLayout.LayoutParams(dp(48), dp(48)));
         root.addView(top);
+
+        search = new EditText(this);
+        search.setSingleLine(true);
+        search.setHint("Search local browser library");
+        search.setHintTextColor(Color.rgb(120, 135, 155));
+        search.setTextColor(Color.WHITE);
+        search.setBackgroundColor(Color.rgb(25, 31, 41));
+        search.setPadding(dp(12), 0, dp(12), 0);
+        search.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { refresh(); }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+        LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
+        searchLp.setMargins(0, dp(4), 0, dp(10));
+        root.addView(search, searchLp);
 
         ScrollView scroll = new ScrollView(this);
         list = new LinearLayout(this);
@@ -69,8 +96,6 @@ public final class LibraryActivity extends Activity {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setGravity(Gravity.CENTER);
         Button clear = button("Clear history");
         clear.setOnClickListener(v -> {
             if (showBookmarks) return;
@@ -80,9 +105,8 @@ public final class LibraryActivity extends Activity {
                     .setPositiveButton("Clear", (d, w) -> { HistoryStore.clear(this); refresh(); })
                     .setNegativeButton("Cancel", null).show();
         });
-        bottom.addView(clear, new LinearLayout.LayoutParams(
+        root.addView(clear, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
-        root.addView(bottom);
         return root;
     }
 
@@ -93,28 +117,45 @@ public final class LibraryActivity extends Activity {
         if (showBookmarks) renderBookmarks(); else renderHistory();
     }
 
+    private String query() {
+        return search == null ? "" : search.getText().toString().trim().toLowerCase();
+    }
+
     private void renderBookmarks() {
+        String q = query();
         List<BookmarkStore.Entry> entries = BookmarkStore.list(this);
-        if (entries.isEmpty()) { empty("No bookmarks yet"); return; }
+        int shown = 0;
         for (BookmarkStore.Entry e : entries) {
+            if (!q.isEmpty() && !e.url.toLowerCase().contains(q)
+                    && !e.title.toLowerCase().contains(q)) continue;
             addRow(e.title, e.url, e.savedAt, () -> open(e.url), () -> {
-                BookmarkStore.remove(this, e.url); refresh();
+                BookmarkStore.remove(this, e.url);
+                Toast.makeText(this, "Bookmark removed", Toast.LENGTH_SHORT).show();
+                refresh();
             });
+            if (++shown >= 200) break;
         }
+        if (shown == 0) empty(q.isEmpty() ? "No bookmarks yet" : "No matching bookmarks");
     }
 
     private void renderHistory() {
-        List<HistoryStore.Entry> entries = HistoryStore.list(this);
-        if (entries.isEmpty()) { empty("No browsing history yet"); return; }
+        String q = query();
+        List<HistoryStore.Entry> entries = q.isEmpty()
+                ? HistoryStore.list(this)
+                : HistoryStore.search(this, q, 200);
+        if (entries.isEmpty()) { empty(q.isEmpty() ? "No browsing history yet" : "No matching history"); return; }
         int shown = 0;
         for (HistoryStore.Entry e : entries) {
             if (shown++ >= 200) break;
             String subtitle = e.url + (e.visits > 1 ? "  ·  " + e.visits + " visits" : "");
-            addRow(e.title, subtitle, e.visitedAt, () -> open(e.url), null);
+            addRow(e.title, subtitle, e.visitedAt, () -> open(e.url), () -> {
+                BookmarkStore.add(this, e.title, e.url);
+                Toast.makeText(this, "Bookmarked", Toast.LENGTH_SHORT).show();
+            });
         }
     }
 
-    private void addRow(String name, String subtitle, long time, Runnable open, Runnable remove) {
+    private void addRow(String name, String subtitle, long time, Runnable open, Runnable longAction) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(dp(12), dp(12), dp(12), dp(12));
@@ -143,7 +184,7 @@ public final class LibraryActivity extends Activity {
         }
 
         row.setOnClickListener(v -> open.run());
-        if (remove != null) row.setOnLongClickListener(v -> { remove.run(); return true; });
+        if (longAction != null) row.setOnLongClickListener(v -> { longAction.run(); return true; });
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
