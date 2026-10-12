@@ -27,6 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           node --check browser/app/src/main/assets/edgeflow/chatgpt.js
+          node --check browser/app/src/main/assets/edgeflow/general.js
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -34,7 +35,12 @@ jobs:
           data = json.loads(p.read_text())
           assert data['browser_specific_settings']['gecko']['id'] == 'edgeflow-core@edgeflow.local'
           assert 'nativeMessagingFromContent' in data.get('permissions', [])
-          assert 'https://chatgpt.com/*' in data['content_scripts'][0]['matches']
+          scripts = data['content_scripts']
+          assert 'https://chatgpt.com/*' in scripts[0]['matches']
+          assert 'general.js' in scripts[1]['js']
+          assert 'https://chatgpt.com/*' in scripts[1]['exclude_matches']
+          assert 'http://*/*' in scripts[1]['matches']
+          assert 'https://*/*' in scripts[1]['matches']
           print('EdgeFlow Core manifest/static checks: PASS')
           PY
 
