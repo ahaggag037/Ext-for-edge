@@ -9,7 +9,8 @@
     mediaObserver: null,
     trackedMedia: new WeakSet(),
     resumedMedia: new WeakSet(),
-    lastPolicyAt: 0
+    lastPolicyAt: 0,
+    saveData: !!navigator.connection?.saveData
   };
 
   const STYLE_ID = 'edgeflow-general-style';
@@ -31,19 +32,30 @@
       html.ef-general-critical [class*="backdrop"] {
         backdrop-filter:none !important;
       }
+      html .ef-general-cold {
+        content-visibility:auto !important;
+        contain-intrinsic-size:auto 900px !important;
+        contain:layout paint style !important;
+      }
     `;
     (document.head || document.documentElement).appendChild(style);
   }
 
   function applyPolicy(policy) {
     if (!policy || typeof policy !== 'object') return;
+    const before = S.pressure;
     S.pressure = Number(policy.pressure) || 0;
     S.aggressive = !!policy.aggressive;
     const root = document.documentElement;
     if (!root) return;
     root.classList.toggle('ef-general-pressure', S.pressure >= 2 || S.aggressive);
     root.classList.toggle('ef-general-critical', S.pressure >= 3);
-    if (S.pressure >= 2) optimizeMedia(document);
+    if (S.pressure >= 2) {
+      optimizeMedia(document);
+      optimizeSections();
+    } else if (before >= 2) {
+      document.querySelectorAll('.ef-general-cold').forEach(node => node.classList.remove('ef-general-cold'));
+    }
   }
 
   function askNative(force = false) {
@@ -55,7 +67,8 @@
     Promise.resolve(browser.runtime.sendNativeMessage('edgeflow.browser', {
       type: 'page-health',
       hidden: document.hidden,
-      nodeCount: document.getElementsByTagName('*').length
+      nodeCount: document.getElementsByTagName('*').length,
+      saveData: S.saveData
     })).then(applyPolicy).catch(() => {});
   }
 
@@ -69,8 +82,8 @@
   function optimizeImages(root) {
     root.querySelectorAll?.('img').forEach(img => {
       if (!img.hasAttribute('decoding')) img.decoding = 'async';
-      if (!img.hasAttribute('loading') && shouldLazy(img)) img.loading = 'lazy';
-      if (S.pressure >= 2 && !img.hasAttribute('fetchpriority') && shouldLazy(img)) {
+      if (!img.hasAttribute('loading') && (S.saveData || shouldLazy(img))) img.loading = 'lazy';
+      if ((S.pressure >= 2 || S.saveData) && !img.hasAttribute('fetchpriority') && shouldLazy(img)) {
         img.setAttribute('fetchpriority', 'low');
       }
     });
@@ -101,9 +114,30 @@
     root.querySelectorAll?.('video, audio').forEach(media => {
       if (S.trackedMedia.has(media)) return;
       S.trackedMedia.add(media);
-      if (media.preload === 'auto' && !media.autoplay) media.preload = 'metadata';
+      if ((S.saveData || S.pressure >= 2) && media.preload === 'auto' && !media.autoplay) media.preload = 'metadata';
       S.mediaObserver?.observe(media);
     });
+  }
+
+  function isSafeSection(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+    if (node.contains(document.activeElement)) return false;
+    if (node.querySelector('input,textarea,select,[contenteditable="true"],[role="dialog"],[aria-modal="true"]')) return false;
+    const r = node.getBoundingClientRect();
+    if (r.height < Math.max(700, innerHeight * 0.8)) return false;
+    return r.top > innerHeight * 1.75 || r.bottom < -innerHeight * 1.25;
+  }
+
+  function optimizeSections() {
+    if (S.pressure < 2) return;
+    const candidates = document.querySelectorAll('article, main > section, main > div > section');
+    let count = 0;
+    for (const node of candidates) {
+      if (count >= 32) break;
+      const safe = isSafeSection(node);
+      node.classList.toggle('ef-general-cold', safe);
+      if (safe) count++;
+    }
   }
 
   function hydrate() {
@@ -122,6 +156,7 @@
               if (node?.nodeType === Node.ELEMENT_NODE) optimizeMedia(node);
             }
           }
+          if (S.pressure >= 2) optimizeSections();
         }, 180);
       });
       observer.observe(root, { childList: true, subtree: true });
@@ -139,8 +174,20 @@
       });
     } else {
       askNative(true);
+      if (S.pressure >= 2) optimizeSections();
     }
   }, { passive: true });
+
+  window.addEventListener('scroll', () => {
+    if (S.pressure >= 2 && !S.mutationTimer) {
+      S.mutationTimer = setTimeout(() => { S.mutationTimer = 0; optimizeSections(); }, 350);
+    }
+  }, { passive: true });
+
+  navigator.connection?.addEventListener?.('change', () => {
+    S.saveData = !!navigator.connection?.saveData;
+    optimizeMedia(document);
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', hydrate, { once: true });
